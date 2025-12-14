@@ -1,0 +1,103 @@
+//! DigitMac of a field element, where each bit is encoded as a Bit16ByteMac.
+
+use ark_bn254::Fq;
+use ark_ff::{AdditiveGroup, Field};
+use ark_std::rand::rngs::StdRng;
+
+use crate::{
+    garble::{Nonce, bit_adaptor::DeriveOutputMacKey},
+    mac::{
+        Mac, MacKey, Random,
+        bit::{
+            bytes::{Bit16ByteMac, Bit16ByteMacKey},
+            group::BitGroupMac,
+        },
+    },
+    utils::{
+        bits::{FromBits, NumBits, ToBits},
+        prg::PRG,
+    },
+};
+
+pub(crate) type DigitMac<G> = super::DigitMac<G, Bit16ByteMac>;
+pub(crate) type DigitMacKey<G> = super::DigitMacKey<G, Bit16ByteMac>;
+
+impl<G> Mac<G::Scalar> for DigitMac<G>
+where
+    G: AdditiveGroup + FromBits<G, G> + Random,
+    G::Scalar: ToBits + NumBits + FromBits<G::Scalar, G::Scalar>,
+{
+    type Key = DigitMacKey<G>;
+
+    #[cfg(test)]
+    fn random_input(rng: &mut StdRng) -> G::Scalar {
+        use ark_std::UniformRand;
+        G::Scalar::rand(rng)
+    }
+}
+
+impl<G> MacKey<G::Scalar, DigitMac<G>> for DigitMacKey<G>
+where
+    G: AdditiveGroup + FromBits<G, G> + Random,
+    G::Scalar: ToBits + NumBits + FromBits<G::Scalar, G::Scalar>,
+{
+    fn encode(&self, value: &G::Scalar) -> DigitMac<G> {
+        let mut macs = Vec::with_capacity(G::Scalar::num_bits() as usize);
+        value
+            .to_bits()
+            .iter()
+            .zip(self.iter())
+            .for_each(|(bit, key)| macs.push(key.encode(bit)));
+
+        DigitMac::from(macs)
+    }
+
+    #[cfg(test)]
+    fn decode(&self, mac: &DigitMac<G>) -> G::Scalar {
+        G::Scalar::from_bits(
+            self.iter()
+                .zip(mac.iter())
+                .map(|(key, mac)| G::Scalar::from(key.decode(mac))),
+        )
+    }
+
+    fn random_key(rng: &mut StdRng) -> Self {
+        let mut bit_mac_keys = Vec::with_capacity(G::Scalar::num_bits() as usize);
+        for _ in 0..G::Scalar::num_bits() {
+            bit_mac_keys.push(Bit16ByteMacKey::random_key(rng));
+        }
+        bit_mac_keys.into()
+    }
+}
+
+impl<G> DeriveOutputMacKey<G::Scalar, G::Scalar, DigitMac<G>, super::group::DigitMac<G>>
+    for DigitMacKey<G>
+where
+    G: Field<BasePrimeField = Fq>,
+    G::Scalar: ToBits + NumBits + FromBits<G::Scalar, G::Scalar> + Random,
+{
+    type Phi = G;
+
+    fn derive_output_mac_key<P: PRG>(
+        &self,
+        prg_unseeded: &P::Unseeded,
+        parent_nonce: &mut Nonce,
+        phi: &G,
+    ) -> super::group::DigitMacKey<G> {
+        let mut group_mac_keys = Vec::with_capacity(self.len());
+
+        self.iter().for_each(|input_key| {
+            let key = <Bit16ByteMacKey as DeriveOutputMacKey<
+                bool,
+                bool,
+                Bit16ByteMac,
+                BitGroupMac<G>,
+            >>::derive_output_mac_key::<P>(
+                input_key, prg_unseeded, parent_nonce, phi
+            );
+            group_mac_keys.push(key);
+        });
+
+        group_mac_keys.into()
+    }
+}

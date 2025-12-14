@@ -1,0 +1,147 @@
+//! Given an input_mac_key: Vec<Bit16ByteMacKey> and a value phi: F, derives an
+//! output_mac_key: Vec<BitGroupMac<F>>.
+//!
+//! Recall that for a DigitMACKey, all its component BitMacKeys must share the
+//! same `phi`.
+//!
+//! This is generic over digits in Fq, Fq2.
+
+use crate::{
+    garble::{Circuit, Nonce, bit_adaptor},
+    mac::{
+        Random,
+        bit::{bytes::Bit16ByteMac, group::BitGroupMac},
+        digit::{bytes, group},
+    },
+    utils::{
+        bits::{FromBits, NumBits, ToBits},
+        prg::PRG,
+    },
+};
+use ark_bn254::Fq;
+use ark_ff::Field;
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+use ark_std::rand::rngs::StdRng;
+
+#[derive(CanonicalSerialize, CanonicalDeserialize)]
+pub(crate) struct Table<F>(Vec<bit_adaptor::Table<Bit16ByteMac, BitGroupMac<F>>>)
+where
+    F: Field<BasePrimeField = Fq> + NumBits + FromBits<bool, F> + Random;
+
+pub(crate) type Input<F> = F;
+pub(crate) type InputMac<F> = bytes::DigitMac<F>;
+pub(crate) type InputMacKey<F> = bytes::DigitMacKey<F>;
+
+pub(crate) type Output<F> = F;
+pub(crate) type OutputMac<F> = group::DigitMac<F>;
+pub(crate) type OutputMacKey<F> = group::DigitMacKey<F>;
+
+impl<F> Circuit<Input<F>, InputMac<F>, Output<F>, OutputMac<F>> for Table<F>
+where
+    F: Field<BasePrimeField = Fq> + NumBits + ToBits + FromBits<F, F> + FromBits<bool, F> + Random,
+{
+    type Aux = F;
+
+    fn garble<P: PRG>(
+        parent_nonce: &mut Nonce,
+        prg_unseeded: &P::Unseeded,
+        rng: &mut StdRng,
+        aux: Option<&Self::Aux>,
+        input_mac_key: &InputMacKey<F>,
+    ) -> (Self, OutputMacKey<F>) {
+        let mut nonce = parent_nonce.fork();
+
+        let mut bit_adaptor_tables = Vec::with_capacity(F::num_bits() as usize);
+        let mut output_mac_keys = Vec::with_capacity(F::num_bits() as usize);
+
+        input_mac_key.iter().for_each(|input_key| {
+            let (table, output_mac_key) =
+                bit_adaptor::Table::garble::<P>(&mut nonce, prg_unseeded, rng, aux, input_key);
+            bit_adaptor_tables.push(table);
+            output_mac_keys.push(output_mac_key);
+        });
+
+        (Self(bit_adaptor_tables), output_mac_keys.into())
+    }
+
+    fn evaluate<P: PRG>(
+        &self,
+        parent_nonce: &mut Nonce,
+        prg_unseeded: &P::Unseeded,
+        input: &F,
+        input_mac: &InputMac<F>,
+    ) -> (F, OutputMac<F>) {
+        let mut nonce = parent_nonce.fork();
+
+        let input_bits = input.to_bits();
+        let mut bit_group_macs = Vec::with_capacity(F::num_bits() as usize);
+
+        input_bits
+            .iter()
+            .take(F::num_bits() as usize)
+            .zip(input_mac.iter())
+            .zip(self.0.iter())
+            .for_each(|((input, input_mac), table)| {
+                let table = table
+                    .evaluate::<P>(&mut nonce, prg_unseeded, input, input_mac)
+                    .1;
+                bit_group_macs.push(table);
+            });
+
+        (*input, bit_group_macs.into())
+    }
+}
+
+#[cfg(test)]
+fn test_digit_mac_adaptor<F>()
+where
+    F: Field<BasePrimeField = Fq> + NumBits + ToBits + FromBits<F, F> + FromBits<bool, F> + Random,
+{
+    use aes::Aes128;
+    use ark_std::rand::SeedableRng;
+
+    use crate::mac::MacKey;
+    use crate::utils::prg::aes_ctr::clear_set;
+
+    const SEED: u64 = 0;
+
+    let mut rng = StdRng::seed_from_u64(SEED);
+    let unseeded_prg = Aes128::init(&[]);
+
+    let input = F::rand(&mut rng);
+    let output = input;
+
+    let input_mac_key = bytes::DigitMacKey::random_key(&mut rng);
+    let phi = F::rand(&mut rng);
+
+    let input_mac = input_mac_key.encode(&input);
+
+    let (table, output_mac_key) = Table::garble::<Aes128>(
+        &mut Nonce::new(),
+        &unseeded_prg,
+        &mut rng,
+        Some(&phi),
+        &input_mac_key,
+    );
+    clear_set();
+
+    let expected_output_mac = output_mac_key.encode(&output);
+    let evaluated_output_mac = table
+        .evaluate::<Aes128>(&mut Nonce::new(), &unseeded_prg, &input, &input_mac)
+        .1;
+    clear_set();
+
+    assert_eq!(expected_output_mac, evaluated_output_mac);
+}
+
+#[test]
+fn test_digit_mac_adaptor_fq() {
+    use ark_bn254::Fq;
+    test_digit_mac_adaptor::<Fq>();
+}
+
+#[test]
+fn test_digit_mac_adaptor_fp2() {
+    use ark_bn254::Fq2;
+    test_digit_mac_adaptor::<Fq2>();
+}
