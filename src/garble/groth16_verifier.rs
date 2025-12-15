@@ -24,6 +24,7 @@ use crate::{
         Circuit, Nonce,
         bivariate::{self, curve_membership},
         conditional_reveal, field_mac_to_ec_mac,
+        g2_subgroup_check::check_g2_membership,
         pairing::{self, KAPPA_A, KAPPA_B},
     },
     mac::{
@@ -341,9 +342,6 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         // The Groth16 input (A, B, C).
         let Input { A, B, C } = *input;
 
-        // Clear the cofactor of `B` [TODO: elaborate on this]
-        let B = B.mul_by_cofactor().mul_by_cofactor_inv();
-
         // Evaluate the field_to_ec_mac table for `A`.
         let a_ec_mac = self
             .a_ec_mac
@@ -364,14 +362,14 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         // Evaluate the field_to_ec_mac table for `B`.
         let b_ec_mac = self
             .b_ec_mac
-            .evaluate::<P>(parent_nonce, prg_unseeded, &input.B.into(), &input_mac.B)
+            .evaluate::<P>(parent_nonce, prg_unseeded, &B.into(), &input_mac.B)
             .1;
 
         // Evaluate the curve validity check table for `B`. This evaluates to
         // `secret` if `B` is not a valid curve point.
         let b_curve_check = self
             .b_curve_check
-            .evaluate::<P>(parent_nonce, prg_unseeded, &input.B.into(), &input_mac.B)
+            .evaluate::<P>(parent_nonce, prg_unseeded, &B.into(), &input_mac.B)
             .0;
         // If `B` is not a valid curve point, return `secret` early
         if !b_curve_check.is_zero() {
@@ -379,6 +377,14 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
                 b_curve_check.to_base_prime_field_elements().next().unwrap(),
                 IdentityMac(PhantomData),
             );
+        } else if let Some(s) = check_g2_membership(
+            B,
+            &b_ec_mac
+                .iter()
+                .map(|endo_mac| **endo_mac)
+                .collect::<Vec<_>>(),
+        ) {
+            return (s, IdentityMac(PhantomData));
         }
 
         // Evaluate the field_to_ec_mac table for `C`.
@@ -400,12 +406,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         // Evaluate the pairing of (A, B)
         let AB_mac = self
             .pairing
-            .evaluate::<P>(
-                parent_nonce,
-                prg_unseeded,
-                &(A.into(), B.into()),
-                &(a_ec_mac, b_ec_mac),
-            )
+            .evaluate::<P>(parent_nonce, prg_unseeded, &(A, B), &(a_ec_mac, b_ec_mac))
             .1;
 
         // Compute the pairing e(A,B) e(C, H_1) on the input A, B, C
@@ -539,6 +540,8 @@ fn test_invalid_groth16() {
 /// leak the same `secret` as in the case where (A, B, C) are a well-formed but
 /// invalid Groth16 input.
 fn test_malformed_curve_points() {
+    use crate::garble::g2_subgroup_check::get_curve_point_not_in_g2;
+
     const SEED: u64 = 0;
 
     let unseeded_prg = Aes128::init(&[]);
@@ -587,8 +590,8 @@ fn test_malformed_curve_points() {
     };
     clear_set();
 
-    // Malformed B
-    let malformed_b = {
+    // Invalid curve point B
+    let invalid_curve_point_b = {
         let invalid_B = G2Affine::new_unchecked(Fq2::rand(&mut rng), Fq2::rand(&mut rng));
         let mut input = input;
         input.B = invalid_B;
@@ -599,6 +602,22 @@ fn test_malformed_curve_points() {
             .0
     };
     clear_set();
+
+    // Valid curve point B but not in G2 subgroup
+    let valid_b_not_in_g2 = {
+        let invalid_B = get_curve_point_not_in_g2(&mut rng);
+        let mut input = input;
+        input.B = invalid_B;
+        let input_mac = input_mac_key.encode(&input);
+
+        table
+            .evaluate::<Aes128>(&mut Nonce::new(), &unseeded_prg, &input, &input_mac)
+            .0
+    };
+    clear_set();
+
+    assert_eq!(invalid_curve_point_b, valid_b_not_in_g2);
+    let malformed_b = invalid_curve_point_b;
 
     // Malformed C
     let malformed_c = {

@@ -6,7 +6,7 @@ use ark_bn254::{Bn254, Fq12, Fr, G1Projective, G2Affine, G2Projective, g1, g2};
 use ark_ec::{
     AffineRepr, CurveGroup, PrimeGroup, ScalarMul,
     pairing::{Pairing, PairingOutput},
-    short_weierstrass::Projective,
+    short_weierstrass::Affine,
 };
 use ark_ff::{Field, PrimeField, UniformRand};
 use ark_std::rand::rngs::StdRng;
@@ -35,7 +35,7 @@ lazy_static! {
 pub(crate) const KAPPA_B: usize = 50;
 pub(crate) const KAPPA_A: usize = KAPPA_B * 3;
 
-pub(crate) type Input = (Projective<g1::Config>, Projective<g2::Config>);
+pub(crate) type Input = (Affine<g1::Config>, Affine<g2::Config>);
 pub(crate) type InputMacKey = (
     [EndoMacKey<g1::Config>; KAPPA_A],
     [EndoMacKey<g2::Config>; KAPPA_B],
@@ -54,9 +54,9 @@ impl Mac<Input> for InputMac {
 
     #[cfg(test)]
     fn random_input(rng: &mut StdRng) -> Input {
-        use ark_bn254::G2Projective;
+        use ark_bn254::{G1Affine, G2Affine};
 
-        (G1Projective::rand(rng), G2Projective::rand(rng))
+        (G1Affine::rand(rng), G2Affine::rand(rng))
     }
 }
 
@@ -112,11 +112,11 @@ impl Circuit<Input, InputMac, Output, OutputMac> for Table {
 
         let mut output_mac = Vec::with_capacity(KAPPA_B);
         (0..KAPPA_B).for_each(|i| {
-            let B_mac = B_mac[i].into_affine();
+            let B_mac = *B_mac[i];
             let X_row = (0..KAPPA_A).map(|j| self.0[i + j]);
 
             let pairing = Bn254::multi_pairing(
-                std::iter::once(A.into_affine()).chain(A_mac.iter().map(|mac| mac.into_affine())),
+                std::iter::once(*A).chain(A_mac.iter().map(|mac| **mac)),
                 std::iter::once(B_mac).chain(X_row),
             );
             output_mac.push(EndoMultGroupMac::from(pairing.0));
@@ -216,16 +216,17 @@ impl Table {
         });
 
         // Construct A_mac_key
-        let A_mac_key = try_into_array(A_phis.iter().zip(A_ks.iter()).map(|(phi, k)| EndoMacKey {
-            phi: phi.clone(),
-            k: k.into_group(),
-        }));
+        let A_mac_key =
+            try_into_array(A_phis.iter().zip(A_ks.iter()).map(|(phi, &k)| EndoMacKey {
+                phi: phi.clone(),
+                k,
+            }));
 
         // Construct B_mac_key
         let B_mac_key =
             try_into_array(B_phis.iter().zip(B_ks.iter()).map(|(phi, &k)| EndoMacKey {
                 phi: phi.clone(),
-                k,
+                k: k.into_affine(),
             }));
 
         // Construct output_mac_key

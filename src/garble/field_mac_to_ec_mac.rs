@@ -6,11 +6,7 @@
 //! This is generic over inputs in Fq and Fq2.
 
 use ark_bn254::Fq;
-use ark_ec::{
-    AffineRepr, CurveGroup,
-    scalar_mul::glv::GLVConfig,
-    short_weierstrass::{Affine, Projective},
-};
+use ark_ec::{AffineRepr, scalar_mul::glv::GLVConfig, short_weierstrass::Affine};
 use ark_ff::{Field, batch_inversion};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::rngs::StdRng;
@@ -30,7 +26,7 @@ use crate::{
     },
 };
 
-pub(crate) type Output<Config> = Projective<Config>;
+pub(crate) type Output<Config> = Affine<Config>;
 pub(crate) type OutputMac<Config, const KAPPA: usize> = IteratedEndoMac<Config, KAPPA>;
 pub(crate) type OutputMacKey<Config, const KAPPA: usize> = [EndoMacKey<Config>; KAPPA];
 
@@ -93,7 +89,7 @@ where
         {
             let B = C::COEFF_B;
             let cs_flags = [true, true, true, false, true, false];
-            let (x, y) = mac_key.k.into_affine().xy().unwrap();
+            let (x, y) = mac_key.k.xy().unwrap();
             // f(X, Y) = phi * (X, Y) + K = (a X, b Y) + K
             let mut cs = {
                 //  (6, 1)                 # c_0
@@ -126,7 +122,7 @@ where
             F: Field,
         {
             let B = C::COEFF_B;
-            let (x, y) = mac_key.k.into_affine().xy().unwrap();
+            let (x, y) = mac_key.k.xy().unwrap();
 
             let cs_flags = [true, false, true, true, true, true];
             let mut cs = {
@@ -158,7 +154,7 @@ where
             C: GLVConfig<BaseField = F>,
             F: Field,
         {
-            let (x, _) = mac_key.k.into_affine().xy().unwrap();
+            let (x, _) = mac_key.k.xy().unwrap();
             let cs_flags = [true, true, false, false, false, false];
 
             let mut cs = {
@@ -235,7 +231,7 @@ where
         prg_unseeded: &P::Unseeded,
         input: &Input<Config::BaseField>,
         input_mac: &InputMac<Config::BaseField>,
-    ) -> (Projective<Config>, OutputMac<Config, KAPPA>) {
+    ) -> (Affine<Config>, OutputMac<Config, KAPPA>) {
         let mut nonce = parent_nonce.fork();
 
         let mut xs = Vec::with_capacity(self.x.len());
@@ -273,19 +269,14 @@ where
             .for_each(|((x, y), z_inv)| {
                 // Use Jacobian coordinates, so x / z^2, y / z^3
                 let z2 = z_inv.square();
-                let point = Affine::new_unchecked(x * z2, y * z_inv * z2)
-                    .mul_by_cofactor()
-                    .mul_by_cofactor_inv();
-                let mac = EndoMac::from(point.into_group());
+                let point = Affine::new_unchecked(x * z2, y * z_inv * z2);
+                let mac = EndoMac::from(point);
                 macs.push(mac);
             });
 
         let macs: Box<[EndoMac<Config>; KAPPA]> = macs.try_into().unwrap_or_else(|_| panic!());
 
-        (
-            Affine::new_unchecked(input.x, input.y).into_group(),
-            macs.into(),
-        )
+        (Affine::new_unchecked(input.x, input.y), macs.into())
     }
 }
 
@@ -312,9 +303,9 @@ where
     let input_mac_key = InputMacKey::random_key(&mut rng);
     let output_mac_key = OutputMacKey::<_, KAPPA_B>::random_key(&mut rng);
 
-    let input_point = Projective::<C>::rand(&mut rng);
+    let input_point = Affine::<C>::rand(&mut rng);
 
-    let input = input_point.into_affine().into();
+    let input = input_point.into();
     let input_mac = input_mac_key.encode(&input);
 
     let output = input_point;
