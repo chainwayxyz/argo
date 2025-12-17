@@ -7,7 +7,7 @@ use std::marker::PhantomData;
 
 use ark_bn254::{Bn254, Fq, Fq12, g1::Config as G1Config};
 use ark_ec::pairing::Pairing;
-use ark_ff::{AdditiveGroup, BigInteger, Field, Fp12, PrimeField, batch_inversion};
+use ark_ff::{AdditiveGroup, BigInt, BigInteger, Field, Fp12, PrimeField, batch_inversion};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::rngs::StdRng;
 
@@ -65,7 +65,10 @@ impl<const KAPPA: usize> Table<KAPPA> {
     }
 
     pub(crate) fn derive_secret(input_mac_key: &InputMacKey<KAPPA>) -> Fq {
-        pow_n_lincomb::<_, Fq, Fq, 6>(input_mac_key.iter().map(|key| Fq::from(key.phi.as_u8())))
+        pow_n_lincomb::<_, Fq, Fq>(
+            input_mac_key.iter().map(|key| Fq::from(key.phi.as_u8())),
+            Fq::from(BigInt::from(6u8)),
+        )
     }
 }
 
@@ -138,7 +141,7 @@ impl<const KAPPA: usize> Circuit<Input, InputMac<KAPPA>, Output, IdentityMac<Out
             .map(|input| Fq::from(input_exp.iter().position(|&x| x == *input).unwrap() as u8));
 
         // Recover the secret as the pow_6_lincomb of the phis.
-        let s = pow_n_lincomb::<_, Fq, Fq, 6>(phis);
+        let s = pow_n_lincomb::<_, Fq, Fq>(phis, Fq::from(BigInt::from(6u8)));
         (s, IdentityMac(PhantomData))
     }
 }

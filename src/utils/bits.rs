@@ -131,16 +131,19 @@ where
 }
 
 /// Computes ∑ v_i * N^i using Horner's method
-pub(crate) fn pow_n_lincomb<I, Value, Coeff, const N: u64>(values: I) -> Value
+pub(crate) fn pow_n_lincomb<I, Value, Coeff>(values: I, n: Coeff) -> Value
 where
     I: IntoIterator<Item = Value>,
     I::IntoIter: DoubleEndedIterator,
-    Value:
-        Field + Mul<Coeff, Output = Value> + MulAssign<Coeff> + Add<Value, Output = Value> + Copy,
+    Value: AdditiveGroup
+        + Mul<Coeff, Output = Value>
+        + MulAssign<Coeff>
+        + Add<Value, Output = Value>
+        + Copy,
     Coeff: Copy,
 {
     values
         .into_iter()
         .rev()
-        .fold(Value::zero(), |acc, value| acc.pow([N]) + value)
+        .fold(Value::zero(), |acc, value| acc * n + value)
 }

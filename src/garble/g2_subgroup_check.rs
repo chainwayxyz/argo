@@ -10,7 +10,7 @@
 use ark_bn254::{Fq, Fr, g2};
 use ark_ec::AffineRepr;
 use ark_ec::{CurveGroup, short_weierstrass::Affine};
-use ark_ff::PrimeField;
+use ark_ff::{BigInt, PrimeField};
 #[cfg(test)]
 use ark_std::rand::rngs::StdRng;
 
@@ -43,7 +43,7 @@ pub(crate) fn check_g2_membership(
     });
 
     // Recover the secret as the pow_6_lincomb of the phis.
-    let s = pow_n_lincomb::<_, Fq, Fq, 6>(phis);
+    let s = pow_n_lincomb::<_, Fq, Fq>(phis, Fq::from(BigInt::from(6u8)));
 
     Some(s)
 }
