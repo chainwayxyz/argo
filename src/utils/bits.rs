@@ -140,10 +140,10 @@ where
         + MulAssign<Coeff>
         + Add<Value, Output = Value>
         + Copy,
-    Coeff: Copy,
+    Coeff: Clone,
 {
     values
         .into_iter()
         .rev()
-        .fold(Value::zero(), |acc, value| acc * n + value)
+        .fold(Value::zero(), |acc, value| acc * n.clone() + value)
 }

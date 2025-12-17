@@ -6,7 +6,7 @@
 //! This is generic over inputs in Fq and Fq2.
 
 use ark_bn254::Fq;
-use ark_ec::{AffineRepr, scalar_mul::glv::GLVConfig, short_weierstrass::Affine};
+use ark_ec::{AdditiveGroup, AffineRepr, scalar_mul::glv::GLVConfig, short_weierstrass::Affine};
 use ark_ff::{Field, batch_inversion};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::rngs::StdRng;
@@ -63,23 +63,44 @@ where
         let output_mac_key = aux.unwrap();
 
         // c_0, c_1 * a, c_2 * b, c_3 * a * b, c_4 * a^2, c_5 * b^2
-        fn endo_coeffs<Config: GLVConfig>(phi: &EndoScalar<Config>) -> [Config::BaseField; 6] {
-            // Convert phi into base field
-            let phi = phi.as_base();
-
-            // phi = a * b, a^3 = 1, b^2 = 1
-            // phi^2 = (a^2) (b^2) = a^2 != a
-            // phi^4 = (a^4) (b^4) = (a^(3 + 1)) (b^2)^2 = a
-            // a = phi^4 is the "three part"
-            // b = phi^3 is the "two part"
-            let (a, b) = {
-                let phi_sq = phi.square();
-                (phi_sq.square(), phi_sq * phi)
-            };
-
-            // phi * (X, Y) = (a * X, b * Y)
-            // c_0, c_1 * a, c_2 * b, c_3 * a * b, c_4 * a^2, c_5 * b^2
-            [Config::BaseField::ONE, a, b, a * b, a.square(), b.square()]
+        // The `c`s are coeffs of a polynomial to evaluate P -> P + k
+        // The endo_coeffs converts it into a polynomial to evaluate P -> phi * P + k
+        fn endo_coeffs<Config: GLVConfig>(
+            phi: &EndoScalar<Config>,
+            cs: [Config::BaseField; 6],
+            r: Config::BaseField,
+            k: Config::BaseField,
+        ) -> [Config::BaseField; 6] {
+            // If phi = NegInf, just return k
+            match phi {
+                EndoScalar::NegInf(_) => [
+                    k * r,
+                    Config::BaseField::ZERO,
+                    Config::BaseField::ZERO,
+                    Config::BaseField::ZERO,
+                    Config::BaseField::ZERO,
+                    Config::BaseField::ZERO,
+                ],
+                _ => {
+                    let phi = EndoScalar::<Config>::base().pow([phi.as_i8() as u64]);
+                    let (a, b) = {
+                        let phi_sq = phi.square();
+                        (phi_sq.square(), phi_sq * phi)
+                        // phi * (X, Y) = (a * X, b * Y)
+                        // c_0, c_1 * a, c_2 * b, c_3 * a * b, c_4 * a^2, c_5 * b^2
+                    };
+                    let mut coeffs = [Config::BaseField::ZERO; 6];
+                    coeffs
+                        .iter_mut()
+                        .zip([Config::BaseField::ONE, a, b, a * b, a.square(), b.square()].iter())
+                        .zip(cs.iter())
+                        .for_each(|((coeff, v), c)| *coeff = *v * c * r);
+                    coeffs
+                }
+            }
+            // For x, k = P.x
+            // For y, k = P.y
+            // For z, k = P.z
         }
 
         fn x_aux<C, F>(mac_key: &EndoMacKey<C>, a2: F) -> ([F; 6], [bool; 6])
@@ -91,7 +112,7 @@ where
             let cs_flags = [true, true, true, false, true, false];
             let (x, y) = mac_key.k.xy().unwrap();
             // f(X, Y) = phi * (X, Y) + K = (a X, b Y) + K
-            let mut cs = {
+            let cs = {
                 //  (6, 1)                 # c_0
                 let c_0 = B.double();
                 //  (xQ_^2, xP_)           # c_1
@@ -109,9 +130,7 @@ where
                 [c_0 * a2, c_1 * a2, c_2 * a2, c_3 * a2, c_4 * a2, c_5 * a2]
             };
 
-            cs.iter_mut()
-                .zip(endo_coeffs(&mac_key.phi).iter())
-                .for_each(|(c, endo)| *c *= endo);
+            let cs = endo_coeffs(&mac_key.phi, cs, a2, x);
 
             (cs, cs_flags)
         }
@@ -125,7 +144,7 @@ where
             let (x, y) = mac_key.k.xy().unwrap();
 
             let cs_flags = [true, false, true, true, true, true];
-            let mut cs = {
+            let cs = {
                 //  (9*yQ_, 1)                  # c_0
                 let c_0 = F::from(3) * B * y;
                 //  (0,   xP_),                 # c_1 = 0
@@ -142,9 +161,7 @@ where
                 // scale by random a3 = a^3
                 [c_0 * a3, c_1 * a3, c_2 * a3, c_3 * a3, c_4 * a3, c_5 * a3]
             };
-            cs.iter_mut()
-                .zip(endo_coeffs(&mac_key.phi).iter())
-                .for_each(|(c, endo)| *c *= endo);
+            let cs = endo_coeffs(&mac_key.phi, cs, a3, y);
 
             (cs, cs_flags)
         }
@@ -157,7 +174,7 @@ where
             let (x, _) = mac_key.k.xy().unwrap();
             let cs_flags = [true, true, false, false, false, false];
 
-            let mut cs = {
+            let cs = {
                 //  (-xQ_,      1)]       # c_0
                 let c_0 = -x;
                 //  (1, xP_)              # c_1
@@ -171,9 +188,7 @@ where
                 [c_0 * a, c_1 * a, c_2 * a, c_3 * a, c_4 * a, c_5 * a]
             };
 
-            cs.iter_mut()
-                .zip(endo_coeffs(&mac_key.phi).iter())
-                .for_each(|(c, endo)| *c *= endo);
+            let cs = endo_coeffs(&mac_key.phi, cs, a, F::ONE);
 
             (cs, cs_flags)
         }

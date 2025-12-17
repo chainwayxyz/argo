@@ -190,9 +190,9 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         // - a_ec_mac_key: used as the output key for field_to_ec_mac of `A`
         // - b_ec_mac_key: used as the output key for field_to_ec_mac of `B`
         // - pairing_output_mac_key: used to derive the input key for conditional_reveal
-        // - powers_of_tau: used in the pairing e(A,B) garbling table
-        let ((a_ec_mac_key, b_ec_mac_key), pairing_output_mac_key, powers_of_tau) =
-            pairing::Table::random_mac_keypair_and_tau(rng);
+        // - X: used in the pairing e(A,B) garbling table
+        let ((a_ec_mac_key, b_ec_mac_key), pairing_output_mac_key, X) =
+            pairing::Table::random_mac_keypair_and_vec(rng);
 
         // The secret that will be conditionally revealed.
         let secret = conditional_reveal::Table::derive_secret(&pairing_output_mac_key);
@@ -285,7 +285,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
             parent_nonce,
             prg_unseeded,
             rng,
-            Some(&(powers_of_tau, pairing_output_mac_key.clone())),
+            Some(&(X, pairing_output_mac_key.clone())),
             &(a_ec_mac_key, b_ec_mac_key),
         )
         .0;

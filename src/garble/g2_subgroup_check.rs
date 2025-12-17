@@ -7,14 +7,14 @@
 //! Solve dlog of y wrt z = r * P will return phi as long as gcd(h, 6) = 1,
 //! where h is the cofactor
 
-use ark_bn254::{Fq, Fr, g2};
+use ark_bn254::{Fq, Fr, g1, g2};
 use ark_ec::AffineRepr;
 use ark_ec::{CurveGroup, short_weierstrass::Affine};
-use ark_ff::{BigInt, PrimeField};
+use ark_ff::PrimeField;
 #[cfg(test)]
 use ark_std::rand::rngs::StdRng;
 
-use crate::{mac::endo::EndoScalar, utils::bits::pow_n_lincomb};
+use crate::mac::endo::{ENDO_SIZE, EndoScalar};
 
 /// Leaks a secret if `curve_point` is not in G2.
 pub(crate) fn check_g2_membership(
@@ -22,9 +22,9 @@ pub(crate) fn check_g2_membership(
     g2_mac: &[Affine<g2::Config>],
 ) -> Option<Fq> {
     // For each possible value of `phi`, compute [r * phi] P
-    let r_phi_P: Vec<_> = (0..6)
+    let r_phi_P: Vec<_> = (0..ENDO_SIZE)
         .map(|phi| {
-            let phi: EndoScalar<g2::Config> = phi.into();
+            let phi: EndoScalar<g2::Config> = (phi as i8 - 1).into();
 
             phi.endo(curve_point.mul_bigint(Fr::MODULUS).into_affine())
         })
@@ -38,13 +38,12 @@ pub(crate) fn check_g2_membership(
         // m     =     phi * P +     k
         // r * m = r * phi * P + r * k = r * phi * P
         let y = point.mul_bigint(Fr::MODULUS);
-        let endoscalar = r_phi_P.iter().position(|&x| x == y).unwrap();
-        Fq::from(endoscalar as u8)
+        let endoscalar = r_phi_P.iter().position(|&x| x == y).unwrap() as i8;
+        EndoScalar::from(endoscalar - 1)
     });
 
     // Recover the secret as the pow_6_lincomb of the phis.
-    let s = pow_n_lincomb::<_, Fq, Fq>(phis, Fq::from(BigInt::from(6u8)));
-
+    let s = EndoScalar::<g1::Config>::pack(phis);
     Some(s)
 }
 

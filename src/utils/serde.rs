@@ -4,7 +4,7 @@ use ark_serialize::{
 };
 
 use crate::{
-    garble::pairing::{self, KAPPA_A, KAPPA_B},
+    garble::pairing::{self, KAPPA_A},
     mac::{IteratedMac, Mac},
 };
 use std::fmt::Debug;
@@ -100,11 +100,7 @@ impl CanonicalDeserialize for pairing::Table {
             Ok(vec.into_boxed_slice().try_into().expect("N elements"))
         }
 
-        let X = deserialize_box_vec::<G2Affine, { KAPPA_A + KAPPA_B }, _>(
-            &mut reader,
-            compress,
-            validate,
-        )?;
+        let X = deserialize_box_vec::<G2Affine, { KAPPA_A }, _>(&mut reader, compress, validate)?;
 
         Ok(Self(X))
     }

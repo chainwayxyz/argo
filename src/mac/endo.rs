@@ -5,19 +5,24 @@
 
 use std::marker::PhantomData;
 
-use ark_bn254::{Fq12, g1, g2};
-use ark_ec::{CurveGroup, scalar_mul::glv::GLVConfig, short_weierstrass::Affine};
-use ark_ff::{BigInteger, Field, PrimeField, UniformRand};
+use ark_bn254::{Fq, Fq12, g1, g2};
+use ark_ec::{AdditiveGroup, CurveGroup, scalar_mul::glv::GLVConfig, short_weierstrass::Affine};
+use ark_ff::{BigInt, BigInteger, CyclotomicMultSubgroup, Field, PrimeField, UniformRand};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::rngs::StdRng;
 use derive_more::{Deref, From};
 
-use crate::mac::{IteratedMac, Mac, MacKey, Random, RandomFromPhi};
+use crate::{
+    mac::{IteratedMac, Mac, MacKey, Random, RandomFromPhi},
+    utils::bits::pow_n_lincomb,
+};
+
+pub(crate) const ENDO_SIZE: usize = 7;
 
 #[derive(Clone, Copy)]
-#[repr(u8)]
 pub(crate) enum EndoScalar<G> {
-    Zero(PhantomData<G>) = 0,
+    NegInf(PhantomData<G>),
+    Zero(PhantomData<G>),
     One(PhantomData<G>),
     Two(PhantomData<G>),
     Three(PhantomData<G>),
@@ -25,9 +30,10 @@ pub(crate) enum EndoScalar<G> {
     Five(PhantomData<G>),
 }
 
-impl<G> From<u8> for EndoScalar<G> {
-    fn from(value: u8) -> Self {
+impl<G> From<i8> for EndoScalar<G> {
+    fn from(value: i8) -> Self {
         match value {
+            -1 => Self::NegInf(PhantomData),
             0 => Self::Zero(PhantomData),
             1 => Self::One(PhantomData),
             2 => Self::Two(PhantomData),
@@ -42,6 +48,7 @@ impl<G> From<u8> for EndoScalar<G> {
 impl From<EndoScalar<g2::Config>> for EndoScalar<g1::Config> {
     fn from(value: EndoScalar<g2::Config>) -> Self {
         match value {
+            EndoScalar::NegInf(_) => EndoScalar::NegInf(PhantomData),
             EndoScalar::Zero(_) => EndoScalar::Zero(PhantomData),
             EndoScalar::One(_) => EndoScalar::One(PhantomData),
             EndoScalar::Two(_) => EndoScalar::Two(PhantomData),
@@ -53,6 +60,13 @@ impl From<EndoScalar<g2::Config>> for EndoScalar<g1::Config> {
 }
 
 impl<G: GLVConfig> EndoScalar<G> {
+    #[inline]
+    pub(crate) fn two_minus_omega() -> G::ScalarField {
+        let two = G::ScalarField::ONE + G::ScalarField::ONE;
+        let neg_omega = EndoScalar::One(PhantomData::<G>).as_scalar();
+        two + neg_omega
+    }
+
     #[inline]
     fn p_sq_mod_r() -> G::ScalarField {
         let p = <<G::BaseField as Field>::BasePrimeField as PrimeField>::MODULUS;
@@ -76,7 +90,7 @@ impl<G: GLVConfig> EndoScalar<G> {
     }
 
     #[inline]
-    fn base() -> G::BaseField {
+    pub(crate) fn base() -> G::BaseField {
         if -G::LAMBDA == Self::p_sq_mod_r() {
             -G::ENDO_COEFFS[0]
         } else {
@@ -84,8 +98,9 @@ impl<G: GLVConfig> EndoScalar<G> {
         }
     }
 
-    pub(crate) fn as_u8(&self) -> u8 {
+    pub(crate) fn as_i8(&self) -> i8 {
         match self {
+            EndoScalar::NegInf(_) => -1,
             EndoScalar::Zero(_) => 0,
             EndoScalar::One(_) => 1,
             EndoScalar::Two(_) => 2,
@@ -95,53 +110,55 @@ impl<G: GLVConfig> EndoScalar<G> {
         }
     }
 
-    pub(crate) fn as_base(&self) -> G::BaseField {
-        let exp = self.as_u8() as u64;
-        Self::base().pow([exp])
-    }
-
     pub(crate) fn as_scalar(&self) -> G::ScalarField {
-        let exp = self.as_u8() as u64;
-        Self::scalar().pow([exp])
+        match self {
+            EndoScalar::NegInf(_) => G::ScalarField::ZERO,
+            _ => {
+                let exp = self.as_i8() as u64;
+                // When self = NEGINF, return ZERO
+                Self::scalar().pow([exp])
+            }
+        }
     }
 
-    /// phi^0 * P = P
-    /// phi^1 * P = (-P).endo()
-    /// phi^2 * P = P.endo().endo()
-    /// phi^3 * P = -P
-    /// phi^4 * P = P.endo()
-    /// phi^5 * P = -P.endo().endo()
     pub(crate) fn endo(&self, point: Affine<G>) -> Affine<G> {
-        let phi = self.as_base();
-        let (a, b) = {
-            let phi_sq = phi.square();
-            (phi_sq.square(), phi_sq * phi)
-        };
+        match self {
+            Self::NegInf(_) => Affine::identity(),
+            _ => {
+                let phi = Self::base().pow([self.as_i8() as u64]);
+                let (a, b) = {
+                    let phi_sq = phi.square();
+                    (phi_sq.square(), phi_sq * phi)
+                };
 
-        Affine {
-            x: a * point.x,
-            y: b * point.y,
-            infinity: point.infinity,
+                Affine {
+                    x: a * point.x,
+                    y: b * point.y,
+                    infinity: point.infinity,
+                }
+            }
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn inverse(&self) -> Self {
-        Self::from_u8(6 - self.as_u8())
+    pub(crate) fn endo_frob<C>(&self, value: &C) -> C
+    where
+        C: CyclotomicMultSubgroup<BasePrimeField = G::BaseField>,
+    {
+        match self {
+            EndoScalar::NegInf(_) => C::ONE,
+            _ => value.frobenius_map(2 * self.as_i8() as usize),
+        }
     }
 
-    #[cfg(test)]
-    fn from_u8(variant: u8) -> Self {
-        match variant {
-            0 => EndoScalar::Zero(PhantomData),
-            1 => EndoScalar::One(PhantomData),
-            2 => EndoScalar::Two(PhantomData),
-            3 => EndoScalar::Three(PhantomData),
-            4 => EndoScalar::Four(PhantomData),
-            5 => EndoScalar::Five(PhantomData),
-            6 => EndoScalar::Zero(PhantomData),
-            _ => unreachable!(),
-        }
+    pub(crate) fn pack<I>(endoscalars: I) -> Fq
+    where
+        I: IntoIterator<Item = Self>,
+        I::IntoIter: DoubleEndedIterator,
+    {
+        pow_n_lincomb::<_, Fq, Fq>(
+            endoscalars.into_iter().map(|phi| Fq::from(phi.as_i8())),
+            Fq::from(BigInt::from(ENDO_SIZE as u8)),
+        )
     }
 }
 
@@ -197,11 +214,8 @@ where
     }
 
     #[cfg(test)]
-    fn decode(&self, mac: &EndoMac<G>) -> Affine<G> {
-        let phi_mul_value = mac.0 - self.k;
-        let phi_inv = self.phi.inverse();
-
-        phi_inv.endo(phi_mul_value.into())
+    fn decode(&self, _mac: &EndoMac<G>) -> Affine<G> {
+        unimplemented!()
     }
 
     fn random_key(rng: &mut StdRng) -> Self {
@@ -265,13 +279,15 @@ impl RandomFromPhi<Fq12, EndoMultGroupMac> for EndoMultGroupMacKey {
 //
 // apply_g1(phi, P) = (u[0]^a * P, (-1)^(phi mod 2) * P)
 //.   a = phi mod 3 OR a = -phi mod 3
-// apply_g2(phi, Q) = (u[0]^c * Q, (-1)^(phi mod 2) * Q)
+// apply_g2(phi, Q) = (u[0]^a * Q, (-1)^(phi mod 2) * Q)
 //.   a = phi mod 3 OR a = -phi mod 3
 // apply_gt(phi, g) = g^(p^phi)
 
 impl MacKey<Fq12, EndoMultGroupMac> for EndoMultGroupMacKey {
     fn encode(&self, value: &Fq12) -> EndoMultGroupMac {
-        (value.frobenius_map(self.phi.as_u8() as usize * 2) * self.k).into()
+        let phi_x = self.phi.endo_frob(value);
+
+        (phi_x * self.k).into()
     }
 
     #[cfg(test)]

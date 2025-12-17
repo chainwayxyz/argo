@@ -1,27 +1,30 @@
 //! Given the input MACs of (A, B): (G1, G2), returns the MAC of e(A, B).
 
 use core::panic;
+use std::marker::PhantomData;
 
 use ark_bn254::{Bn254, Fq12, Fr, G1Projective, G2Affine, G2Projective, g1, g2};
 use ark_ec::{
     AffineRepr, CurveGroup, PrimeGroup, ScalarMul,
     pairing::{Pairing, PairingOutput},
+    scalar_mul::glv::GLVConfig,
     short_weierstrass::Affine,
 };
 use ark_ff::{Field, PrimeField, UniformRand};
 use ark_std::rand::rngs::StdRng;
 use lazy_static::lazy_static;
+use num_bigint::BigInt;
 
 use crate::{
     garble::{Circuit, Nonce},
     mac::{
         Mac, MacKey, Random,
         endo::{
-            EndoMacKey, EndoMultGroupMac, EndoMultGroupMacKey, EndoScalar, IteratedEndoMac,
-            IteratedEndoMultGroupMac,
+            ENDO_SIZE, EndoMacKey, EndoMultGroupMac, EndoMultGroupMacKey, EndoScalar,
+            IteratedEndoMac, IteratedEndoMultGroupMac,
         },
     },
-    utils::{prg::PRG, try_into_array},
+    utils::{bits::pow_n_lincomb, prg::PRG},
 };
 
 lazy_static! {
@@ -32,8 +35,10 @@ lazy_static! {
         );
 }
 
-pub(crate) const KAPPA_B: usize = 50;
-pub(crate) const KAPPA_A: usize = KAPPA_B * 3;
+// KAPPA_B is log_7(2^128)
+pub(crate) const KAPPA_B: usize = 46;
+// KAPPA_A is ceil(log_7(r))
+pub(crate) const KAPPA_A: usize = 92;
 
 pub(crate) type Input = (Affine<g1::Config>, Affine<g2::Config>);
 pub(crate) type InputMacKey = (
@@ -75,11 +80,10 @@ impl MacKey<Input, InputMac> for InputMacKey {
     }
 }
 
-/// Commitment to {KAPPA_A + KAPPA_B} powers of tau
-pub(crate) struct Table(pub(crate) Box<[G2Affine; KAPPA_A + KAPPA_B]>);
+pub(crate) struct Table(pub(crate) Box<[G2Affine; KAPPA_A]>);
 
 impl Circuit<Input, InputMac, Output, OutputMac> for Table {
-    type Aux = (Box<[Fr; KAPPA_A + KAPPA_B]>, OutputMacKey);
+    type Aux = (Box<[Fr; KAPPA_A]>, OutputMacKey);
 
     fn garble<P: PRG>(
         _parent_nonce: &mut Nonce,
@@ -88,13 +92,12 @@ impl Circuit<Input, InputMac, Output, OutputMac> for Table {
         aux: Option<&Self::Aux>,
         _input_mac_key: &InputMacKey,
     ) -> (Self, OutputMacKey) {
-        let (powers_of_tau, output_mac_key) = aux.unwrap();
+        let (X, output_mac_key) = aux.unwrap();
 
-        let mut commitment = Box::new([G2Affine::zero(); KAPPA_A + KAPPA_B]);
+        let mut commitment = Box::new([G2Affine::zero(); KAPPA_A]);
 
-        // Commit to powers of tau in G2
-        let powers_of_tau = G2Projective::generator().batch_mul(powers_of_tau.as_slice());
-        commitment.copy_from_slice(&powers_of_tau);
+        let X = G2Projective::generator().batch_mul(X.as_slice());
+        commitment.copy_from_slice(&X);
 
         (Self(commitment), output_mac_key.clone())
     }
@@ -110,15 +113,17 @@ impl Circuit<Input, InputMac, Output, OutputMac> for Table {
         let (A_mac, B_mac) = input_mac;
         let output = Bn254::pairing(A, B);
 
+        let S = pow_n_lincomb(
+            A_mac.iter().map(|mac| mac.into_group()),
+            EndoScalar::<g2::Config>::two_minus_omega(),
+        );
+
         let mut output_mac = Vec::with_capacity(KAPPA_B);
         (0..KAPPA_B).for_each(|i| {
             let B_mac = *B_mac[i];
-            let X_row = (0..KAPPA_A).map(|j| self.0[i + j]);
+            let X = self.0[i];
 
-            let pairing = Bn254::multi_pairing(
-                std::iter::once(*A).chain(A_mac.iter().map(|mac| **mac)),
-                std::iter::once(B_mac).chain(X_row),
-            );
+            let pairing = Bn254::multi_pairing(vec![*A, S.into_affine()], vec![B_mac, X]);
             output_mac.push(EndoMultGroupMac::from(pairing.0));
         });
 
@@ -130,113 +135,156 @@ impl Circuit<Input, InputMac, Output, OutputMac> for Table {
 }
 
 impl Table {
-    /// Given:
-    ///   - an array of `KAPPA_A` endoscalars phi's,
-    /// Generates:
-    ///   - powers of a random scalar `tau`, and
-    ///   - an array of `KAPPA_B` G2 elements K,
-    /// s.t. K[i] = [-(x tau^i)]G, where x = ∑ phi_j tau^j.
-    fn generate_random_tau_and_vec(
+    fn derive_phis_from_x(x: Fr) -> [EndoScalar<g1::Config>; KAPPA_A] {
+        let phi_components = |z: u8| match z {
+            0 => (0, 0),
+            1 => (1, 0),
+            2 => (0, 1),
+            3 => (1, 1),
+            4 => (-1, -1),
+            5 => (0, -1),
+            6 => (-1, 0),
+            _ => unreachable!(),
+        };
+
+        let phi_mapping = |z: u8| match z {
+            0 => EndoScalar::NegInf(PhantomData),
+            1 => EndoScalar::Zero(PhantomData),
+            2 => EndoScalar::Four(PhantomData),
+            3 => EndoScalar::Five(PhantomData),
+            4 => EndoScalar::Two(PhantomData),
+            5 => EndoScalar::One(PhantomData),
+            6 => EndoScalar::Three(PhantomData),
+            _ => unreachable!(),
+        };
+
+        let mut endoscalars = Vec::with_capacity(KAPPA_A);
+
+        // `a`, `b` are signed bigints
+        let (mut a, mut b) = {
+            let (a, b) = g1::Config::scalar_decomposition(x);
+
+            let mut a_signed = BigInt::from(a.1.into_bigint());
+            if !a.0 {
+                a_signed = -a_signed
+            };
+
+            let mut b_signed = BigInt::from(b.1.into_bigint());
+            if !b.0 {
+                b_signed = -b_signed
+            };
+
+            let a = a_signed - b_signed.clone();
+            let b = -b_signed;
+
+            (a, b)
+        };
+
+        for _ in 0..KAPPA_A {
+            let z: BigInt = (a.clone() + 2 * b.clone()) % ENDO_SIZE;
+            let z = (BigInt::from(ENDO_SIZE) + z) % ENDO_SIZE;
+
+            let z = z.to_bytes_le().1[0];
+            let (d, e) = phi_components(z);
+
+            let phi = phi_mapping(z);
+            endoscalars.push(phi.clone());
+
+            let a_prime: BigInt = a - d;
+            let b_prime: BigInt = b - e;
+
+            let u: BigInt = 3 * a_prime.clone() - b_prime.clone();
+            let v: BigInt = 2 * b_prime + a_prime;
+
+            a = u / ENDO_SIZE;
+            b = v / ENDO_SIZE;
+        }
+
+        endoscalars.try_into().unwrap_or_else(|_| panic!())
+    }
+
+    pub(crate) fn random_mac_keypair_and_vec(
         rng: &mut StdRng,
-        phis: &[EndoScalar<g1::Config>],
-    ) -> (Box<[Fr; KAPPA_A + KAPPA_B]>, Box<[G2Projective; KAPPA_B]>) {
-        assert_eq!(phis.len(), KAPPA_A);
+    ) -> (InputMacKey, OutputMacKey, Box<[Fr; KAPPA_A]>) {
+        // Sample `KAPPA_A` random `r`s
+        let rs: Vec<_> = (0..KAPPA_A).map(|_| Fr::rand(rng)).collect();
 
-        // Sample a random tau
-        let tau = Fr::rand(rng);
+        // Sample x uniformly at random
+        let x = Fr::rand(rng);
+        let A_phis = Self::derive_phis_from_x(x);
 
-        // Compute the powers of tau, [tau^0, ..., tau^{KAPPA_A + KAPPA_B - 1}]
-        let powers_of_tau: Box<[Fr; KAPPA_A + KAPPA_B]> = (0..(KAPPA_A + KAPPA_B))
-            .scan(Fr::ONE, |state, _| {
-                let current = *state;
-                *state *= tau;
-                Some(current)
+        let A_ks_scalar: Vec<_> = (0..KAPPA_A).map(|_| Fr::rand(rng)).collect();
+        let A_ks = G1Projective::generator().batch_mul(&A_ks_scalar);
+
+        #[cfg(test)]
+        {
+            let A_phis_scalar = A_phis.iter().map(|A_phi| A_phi.as_scalar());
+            let expected_x = {
+                pow_n_lincomb::<_, Fr, Fr>(
+                    A_phis_scalar,
+                    EndoScalar::<g1::Config>::two_minus_omega(),
+                )
+            };
+            assert_eq!(x, expected_x);
+        }
+
+        let x_rs: Vec<_> = rs.iter().map(|r| *r * x).collect();
+
+        let neg_B_ks = G2Projective::generator().batch_mul(&x_rs);
+
+        let B_phis: Vec<_> = (0..KAPPA_B)
+            .map(|_| EndoScalar::<g2::Config>::random(rng))
+            .collect();
+
+        let k =
+            pow_n_lincomb::<_, Fr, Fr>(A_ks_scalar, EndoScalar::<g1::Config>::two_minus_omega());
+        let output_ks = {
+            rs.iter()
+                .map(|r| {
+                    let exp = (*r * k).into_bigint();
+                    TARGET_GENERATOR.0.pow(exp)
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let A_mac_key = A_phis
+            .iter()
+            .zip(A_ks.iter())
+            .map(|(phi, &k)| EndoMacKey {
+                phi: phi.clone(),
+                k,
             })
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap();
-
-        // x = ∑ phi_j tau^j
-        let x = phis
-            .iter()
-            .zip(powers_of_tau.iter())
-            .map(|(phi, power)| phi.as_scalar() * power)
-            .sum::<Fr>();
-
-        // k[i] = -(x tau^i)
-        let k_scalars = powers_of_tau
-            .iter()
-            .take(KAPPA_B)
-            .map(|power| -x * power)
-            .collect::<Vec<_>>();
-
-        // K[i] = k[i]G
-        let k_points = G2Projective::generator()
-            .batch_mul(&k_scalars)
-            .iter()
-            .map(|point| point.into_group())
             .collect::<Vec<_>>()
             .try_into()
             .unwrap_or_else(|_| panic!());
 
-        (powers_of_tau, k_points)
-    }
-
-    pub(crate) fn random_mac_keypair_and_tau(
-        rng: &mut StdRng,
-    ) -> (InputMacKey, OutputMacKey, Box<[Fr; KAPPA_A + KAPPA_B]>) {
-        // Sample `KAPPA_A` random endoscalars for `A_phis`
-        let mut A_phis = Vec::with_capacity(KAPPA_A);
-        for _ in 0..KAPPA_A {
-            A_phis.push(EndoScalar::<g1::Config>::random(rng));
-        }
-
-        // Sample `KAPPA_A` random scalars for `A_ks`
-        let A_ks_scalars = (0..KAPPA_A).map(|_| Fr::rand(rng)).collect::<Vec<_>>();
-        let A_ks = G1Projective::generator().batch_mul(&A_ks_scalars);
-
-        // Sample `KAPPA_B` random endocscalars for `B_phis`
-        let mut B_phis = Vec::with_capacity(KAPPA_B);
-        for _ in 0..KAPPA_B {
-            B_phis.push(EndoScalar::<g2::Config>::random(rng));
-        }
-
-        // Use `A_phis` to generate powers_of_tau, and B_ks to be used in
-        // constructing B_mac_key.
-        let (powers_of_tau, B_ks) = Self::generate_random_tau_and_vec(rng, &A_phis);
-
-        // Compute output_ks as ∏ e(A_ks[j], [tau^{i + j}]G)
-        let output_ks = (0..KAPPA_B).map(|i| {
-            TARGET_GENERATOR.0.pow(
-                (0..KAPPA_A)
-                    .map(|j| A_ks_scalars[j] * powers_of_tau[i + j])
-                    .sum::<Fr>()
-                    .into_bigint(),
-            )
-        });
-
-        // Construct A_mac_key
-        let A_mac_key =
-            try_into_array(A_phis.iter().zip(A_ks.iter()).map(|(phi, &k)| EndoMacKey {
+        let B_mac_key: [EndoMacKey<g2::Config>; KAPPA_B] = B_phis
+            .iter()
+            .zip(neg_B_ks.iter())
+            .map(|(phi, &neg_k)| EndoMacKey {
                 phi: phi.clone(),
-                k,
-            }));
+                k: -neg_k,
+            })
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap_or_else(|_| panic!());
 
-        // Construct B_mac_key
-        let B_mac_key =
-            try_into_array(B_phis.iter().zip(B_ks.iter()).map(|(phi, &k)| EndoMacKey {
-                phi: phi.clone(),
-                k: k.into_affine(),
-            }));
+        let output_mac_key = B_phis
+            .iter()
+            .zip(output_ks.iter())
+            .map(|(phi, k)| EndoMultGroupMacKey {
+                phi: phi.clone().into(),
+                k: *k,
+            })
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap_or_else(|_| panic!());
 
-        // Construct output_mac_key
-        let output_mac_key: [_; KAPPA_B] =
-            try_into_array(B_phis.iter().zip(output_ks).map(|(phi, k)| {
-                let phi: EndoScalar<g1::Config> = phi.clone().into();
-                EndoMultGroupMacKey { phi, k }
-            }));
-
-        ((A_mac_key, B_mac_key), output_mac_key, powers_of_tau)
+        (
+            (A_mac_key, B_mac_key),
+            output_mac_key,
+            rs.try_into().unwrap_or_else(|_| panic!()),
+        )
     }
 }
 
@@ -246,33 +294,33 @@ fn test_pairing_circuit() {
     use aes::Aes128;
     use ark_std::rand::SeedableRng;
 
-    const SEED: u64 = 0;
+    for seed in 0..100 {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let unseeded_prg = Aes128::init(&[]);
 
-    let mut rng = StdRng::seed_from_u64(SEED);
-    let unseeded_prg = Aes128::init(&[]);
+        let input = InputMac::random_input(&mut rng);
+        let (input_mac_key, output_mac_key, X) = Table::random_mac_keypair_and_vec(&mut rng);
+        let input_mac = input_mac_key.encode(&input);
 
-    let (input_mac_key, output_mac_key, X) = Table::random_mac_keypair_and_tau(&mut rng);
+        let output = Bn254::pairing(input.0, input.1).0;
 
-    let input = InputMac::random_input(&mut rng);
-    let input_mac = input_mac_key.encode(&input);
-    let output = Bn254::pairing(input.0, input.1).0;
+        let expected_output_mac = output_mac_key.encode(&output);
 
-    let expected_output_mac = output_mac_key.encode(&output);
+        let circuit = Table::garble::<Aes128>(
+            &mut Nonce::new(),
+            &unseeded_prg,
+            &mut rng,
+            Some(&(X, output_mac_key)),
+            &input_mac_key,
+        )
+        .0;
 
-    let circuit = Table::garble::<Aes128>(
-        &mut Nonce::new(),
-        &unseeded_prg,
-        &mut rng,
-        Some(&(X, output_mac_key)),
-        &input_mac_key,
-    )
-    .0;
+        let output_mac = circuit
+            .evaluate::<Aes128>(&mut Nonce::new(), &unseeded_prg, &input, &input_mac)
+            .1;
 
-    let output_mac = circuit
-        .evaluate::<Aes128>(&mut Nonce::new(), &unseeded_prg, &input, &input_mac)
-        .1;
-
-    for (expected, mac) in expected_output_mac.iter().zip(output_mac.iter()) {
-        assert!(expected == mac);
+        for (expected, mac) in expected_output_mac.iter().zip(output_mac.iter()) {
+            assert!(expected == mac);
+        }
     }
 }

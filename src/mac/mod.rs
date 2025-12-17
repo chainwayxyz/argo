@@ -7,7 +7,11 @@ use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::{Rng, RngCore, rngs::StdRng};
 use derive_more::Deref;
 
-use crate::{garble::Nonce, mac::endo::EndoScalar, utils::prg::PRG};
+use crate::{
+    garble::Nonce,
+    mac::endo::{ENDO_SIZE, EndoScalar},
+    utils::prg::PRG,
+};
 
 pub(crate) mod bit;
 pub(crate) mod digit;
@@ -194,15 +198,7 @@ impl Random for [u8; 16] {
 
 impl<G: GLVConfig> Random for EndoScalar<G> {
     fn random(rng: &mut StdRng) -> EndoScalar<G> {
-        let exp: u8 = rng.gen_range(0..6);
-        match exp {
-            0 => Self::Zero(PhantomData),
-            1 => Self::One(PhantomData),
-            2 => Self::Two(PhantomData),
-            3 => Self::Three(PhantomData),
-            4 => Self::Four(PhantomData),
-            5 => Self::Five(PhantomData),
-            _ => unreachable!(),
-        }
+        let exp = rng.gen_range(0..ENDO_SIZE);
+        (exp as i8 - 1).into()
     }
 }

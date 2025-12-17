@@ -7,18 +7,17 @@ use std::marker::PhantomData;
 
 use ark_bn254::{Bn254, Fq, Fq12, g1::Config as G1Config};
 use ark_ec::pairing::Pairing;
-use ark_ff::{AdditiveGroup, BigInt, BigInteger, Field, Fp12, PrimeField, batch_inversion};
+use ark_ff::{AdditiveGroup, BigInteger, Field, Fp12, PrimeField, batch_inversion};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::rngs::StdRng;
 
 use crate::{
-    garble::Nonce,
-    garble::{Circuit, groth16_verifier},
+    garble::{Circuit, Nonce, groth16_verifier},
     mac::{
         IdentityMac, IdentityMacKey, MacKey,
-        endo::{EndoMacKey, EndoMultGroupMacKey, IteratedEndoMultGroupMac},
+        endo::{ENDO_SIZE, EndoMacKey, EndoMultGroupMacKey, EndoScalar, IteratedEndoMultGroupMac},
     },
-    utils::{bits::pow_n_lincomb, prg::PRG},
+    utils::prg::PRG,
 };
 
 /// Input is a single P::TargetField
@@ -55,7 +54,7 @@ impl<const KAPPA: usize> Table<KAPPA> {
                 let k = Bn254::multi_pairing(vec![C.k], vec![H1]).0;
                 // c^{p^(2phi + 6)} = c^{-p^(2phi)}
                 // This has the effect of multiplying the MAC'd value by c
-                let c_term = c.frobenius_map(2 * phi.as_u8() as usize + 6);
+                let c_term = phi.endo_frob(&c.inverse().unwrap());
                 let k = k * AB.k * c_term;
 
                 key.push(EndoMultGroupMacKey { phi, k });
@@ -65,10 +64,7 @@ impl<const KAPPA: usize> Table<KAPPA> {
     }
 
     pub(crate) fn derive_secret(input_mac_key: &InputMacKey<KAPPA>) -> Fq {
-        pow_n_lincomb::<_, Fq, Fq>(
-            input_mac_key.iter().map(|key| Fq::from(key.phi.as_u8())),
-            Fq::from(BigInt::from(6u8)),
-        )
+        EndoScalar::<G1Config>::pack(input_mac_key.iter().map(|key| key.phi.clone()))
     }
 }
 
@@ -116,11 +112,14 @@ impl<const KAPPA: usize> Circuit<Input, InputMac<KAPPA>, Output, IdentityMac<Out
         }
 
         // Precompute the powers of input
-        let mut input_exp = [*input; 6];
+        let mut input_exp = [*input; ENDO_SIZE];
         input_exp
             .iter_mut()
             .enumerate()
-            .for_each(|(exp, input_exp)| *input_exp = input_exp.frobenius_map(exp * 2));
+            .for_each(|(exp, input_exp)| {
+                let phi = EndoScalar::<G1Config>::from(exp as i8 - 1);
+                *input_exp = phi.endo_frob(input_exp);
+            });
 
         // If input_mac is not equal to one_mac, we can recover the `phi`s of
         // the input_mac_key in the following way:
@@ -135,13 +134,14 @@ impl<const KAPPA: usize> Circuit<Input, InputMac<KAPPA>, Output, IdentityMac<Out
             .for_each(|(one_inv, input)| *one_inv *= **input);
 
         // For each input^{phi_i}, brute force the `phi`. This is efficient
-        // because there are only six possible values of `phi`.
-        let phis = input_div_one
-            .iter()
-            .map(|input| Fq::from(input_exp.iter().position(|&x| x == *input).unwrap() as u8));
+        // because there are only seven possible values of `phi`.
+        let phis = input_div_one.iter().map(|input| {
+            let endoscalar = input_exp.iter().position(|&x| x == *input).unwrap() as i8;
+            EndoScalar::from(endoscalar - 1)
+        });
 
-        // Recover the secret as the pow_6_lincomb of the phis.
-        let s = pow_n_lincomb::<_, Fq, Fq>(phis, Fq::from(BigInt::from(6u8)));
+        // Recover the secret as the pow_n_lincomb of the phis.
+        let s = EndoScalar::<G1Config>::pack(phis);
         (s, IdentityMac(PhantomData))
     }
 }
