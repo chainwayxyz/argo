@@ -381,10 +381,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         } else if let Some(s) = check_g2_membership(
             self.conditional_reveal.enc_s,
             B,
-            &b_ec_mac
-                .iter()
-                .map(|endo_mac| **endo_mac)
-                .collect::<Vec<_>>(),
+            b_ec_mac.iter().map(|endo_mac| **endo_mac),
         ) {
             return (s, IdentityMac(PhantomData));
         }

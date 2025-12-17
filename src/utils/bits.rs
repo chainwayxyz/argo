@@ -136,7 +136,7 @@ where
     I: IntoIterator<Item = Value>,
     I::IntoIter: DoubleEndedIterator,
     Value: AdditiveGroup
-        + Mul<Coeff, Output = Value>
+        + for<'a> Mul<&'a Coeff, Output = Value>
         + MulAssign<Coeff>
         + Add<Value, Output = Value>
         + Copy,
@@ -145,5 +145,5 @@ where
     values
         .into_iter()
         .rev()
-        .fold(Value::zero(), |acc, value| acc * n.clone() + value)
+        .fold(Value::zero(), |acc, value| acc * &n + value)
 }

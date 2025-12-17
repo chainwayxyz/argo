@@ -19,25 +19,26 @@ use crate::garble::pairing::KAPPA_B;
 use crate::mac::endo::{ENDO_SIZE, EndoScalar};
 
 /// Leaks a secret if `curve_point` is not in G2.
-pub(crate) fn check_g2_membership(
+pub(crate) fn check_g2_membership<I>(
     enc_s: Fq,
     curve_point: Affine<g2::Config>,
-    g2_mac: &[Affine<g2::Config>],
-) -> Option<Fq> {
+    g2_mac: I,
+) -> Option<Fq>
+where
+    I: Iterator<Item = Affine<g2::Config>> + DoubleEndedIterator,
+{
     // For each possible value of `phi`, compute [r * phi] P
-    let r_phi_P: Vec<_> = (0..ENDO_SIZE)
-        .map(|phi| {
-            let phi: EndoScalar<g2::Config> = (phi as i8 - 1).into();
-
-            phi.endo(curve_point.mul_bigint(Fr::MODULUS).into_affine())
-        })
-        .collect();
+    let mut r_phi_P = [Affine::identity(); ENDO_SIZE];
+    r_phi_P.iter_mut().enumerate().for_each(|(phi, v)| {
+        let phi: EndoScalar<g2::Config> = (phi as i8 - 1).into();
+        *v = phi.endo(curve_point.mul_bigint(Fr::MODULUS).into_affine());
+    });
 
     if r_phi_P.iter().all(|point| point.is_zero()) {
         return None;
     }
 
-    let phis = g2_mac.iter().map(|point| {
+    let phis = g2_mac.map(|point| {
         // m     =     phi * P +     k
         // r * m = r * phi * P + r * k = r * phi * P
         let y = point.mul_bigint(Fr::MODULUS);

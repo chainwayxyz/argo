@@ -10,7 +10,7 @@ use ark_ec::{
     scalar_mul::glv::GLVConfig,
     short_weierstrass::Affine,
 };
-use ark_ff::{Field, PrimeField, UniformRand};
+use ark_ff::{AdditiveGroup, Field, PrimeField, UniformRand};
 use ark_std::rand::rngs::StdRng;
 use lazy_static::lazy_static;
 use num_bigint::BigInt;
@@ -174,14 +174,14 @@ impl Table {
                 b_signed = -b_signed
             };
 
-            let a = a_signed - b_signed.clone();
+            let a = a_signed - &b_signed;
             let b = -b_signed;
 
             (a, b)
         };
 
         for _ in 0..KAPPA_A {
-            let z: BigInt = (a.clone() + 2 * b.clone()) % ENDO_SIZE;
+            let z: BigInt = (&a + 2 * &b) % ENDO_SIZE;
             let z = (BigInt::from(ENDO_SIZE) + z) % ENDO_SIZE;
 
             let z = z.to_bytes_le().1[0];
@@ -193,7 +193,7 @@ impl Table {
             let a_prime: BigInt = a - d;
             let b_prime: BigInt = b - e;
 
-            let u: BigInt = 3 * a_prime.clone() - b_prime.clone();
+            let u: BigInt = 3 * &a_prime - &b_prime;
             let v: BigInt = 2 * b_prime + a_prime;
 
             a = u / ENDO_SIZE;
@@ -207,13 +207,18 @@ impl Table {
         rng: &mut StdRng,
     ) -> (InputMacKey, OutputMacKey, Box<[Fr; KAPPA_A]>) {
         // Sample `KAPPA_A` random `r`s
-        let rs: Vec<_> = (0..KAPPA_A).map(|_| Fr::rand(rng)).collect();
+        let mut rs = [Fr::ZERO; KAPPA_A];
+        rs.iter_mut().for_each(|r| *r = Fr::rand(rng));
 
         // Sample x uniformly at random
         let x = Fr::rand(rng);
         let A_phis = Self::derive_phis_from_x(x);
 
-        let A_ks_scalar: Vec<_> = (0..KAPPA_A).map(|_| Fr::rand(rng)).collect();
+        let mut A_ks_scalar = [Fr::ZERO; KAPPA_A];
+        A_ks_scalar
+            .iter_mut()
+            .for_each(|A_k_scalar| *A_k_scalar = Fr::rand(rng));
+
         let A_ks = G1Projective::generator().batch_mul(&A_ks_scalar);
 
         #[cfg(test)]
@@ -238,13 +243,26 @@ impl Table {
 
         let k =
             pow_n_lincomb::<_, Fr, Fr>(A_ks_scalar, EndoScalar::<g1::Config>::two_minus_omega());
+
         let output_ks = {
-            rs.iter()
-                .map(|r| {
+            let mut powers_of_2 = Vec::with_capacity(Fr::MODULUS_BIT_SIZE as usize);
+            let mut p = TARGET_GENERATOR.0;
+            powers_of_2.push(p);
+            for _ in 1..Fr::MODULUS_BIT_SIZE {
+                p.square_in_place();
+                powers_of_2.push(p);
+            }
+
+            let mut output_ks = [Fq12::ZERO; KAPPA_B];
+            output_ks
+                .iter_mut()
+                .zip(rs.iter())
+                .for_each(|(output_k, r)| {
                     let exp = (*r * k).into_bigint();
-                    TARGET_GENERATOR.0.pow(exp)
-                })
-                .collect::<Vec<_>>()
+                    *output_k = Fq12::pow_with_table(&powers_of_2, exp).unwrap();
+                });
+
+            output_ks
         };
 
         let A_mac_key = A_phis
@@ -272,9 +290,9 @@ impl Table {
         let output_mac_key = B_phis
             .iter()
             .zip(output_ks.iter())
-            .map(|(phi, k)| EndoMultGroupMacKey {
+            .map(|(phi, &k)| EndoMultGroupMacKey {
                 phi: phi.clone().into(),
-                k: *k,
+                k,
             })
             .collect::<Vec<_>>()
             .try_into()
