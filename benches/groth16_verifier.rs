@@ -7,9 +7,9 @@ use argo::{
     mac::MacKey,
     utils::PRG,
 };
-use ark_bn254::{Bn254, G1Affine, G1Projective, G2Affine, G2Projective};
+use ark_bn254::{Bn254, Fq, G1Affine, G1Projective, G2Affine, G2Projective};
 use ark_ec::{PrimeGroup, pairing::Pairing};
-use ark_ff::{BigInteger, PrimeField, UniformRand};
+use ark_ff::UniformRand;
 use ark_std::rand::{SeedableRng, rngs::StdRng};
 use criterion::{Criterion, criterion_group, criterion_main};
 
@@ -17,6 +17,7 @@ fn invalid_snark(c: &mut Criterion) {
     const SEED: u64 = 0;
     let mut rng = StdRng::seed_from_u64(SEED);
 
+    let secret = Fq::rand(&mut rng);
     let input = Input {
         A: G1Affine::rand(&mut rng),
         B: G2Affine::rand(&mut rng),
@@ -33,12 +34,12 @@ fn invalid_snark(c: &mut Criterion) {
     garble_group.sample_size(100);
     garble_group.bench_function("garble", |b| {
         b.iter(|| {
-            garble_groth16(SEED, verifier_key);
+            garble_groth16(SEED, secret, verifier_key);
         })
     });
     garble_group.finish();
 
-    let (table, input_mac_key) = garble_groth16(SEED, verifier_key);
+    let (table, input_mac_key) = garble_groth16(SEED, secret, verifier_key);
 
     let input_mac: InputMac = input_mac_key.encode(&input);
 
@@ -58,14 +59,7 @@ fn invalid_snark(c: &mut Criterion) {
         .evaluate::<Aes128>(&mut Nonce::new(), &unseeded_prg, &input, &input_mac)
         .0;
 
-    let hash_s = table.conditional_reveal.hash_s;
-
-    let bytes = output.into_bigint().to_bytes_le();
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(&bytes);
-    let hash_output = *hasher.finalize().as_bytes();
-
-    assert_eq!(hash_output.to_vec(), hash_s);
+    assert_eq!(output, secret);
 }
 
 criterion_group!(benches, invalid_snark);

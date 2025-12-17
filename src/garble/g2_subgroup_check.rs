@@ -7,17 +7,20 @@
 //! Solve dlog of y wrt z = r * P will return phi as long as gcd(h, 6) = 1,
 //! where h is the cofactor
 
-use ark_bn254::{Fq, Fr, g1, g2};
+use ark_bn254::{Fq, Fr, g2};
 use ark_ec::AffineRepr;
 use ark_ec::{CurveGroup, short_weierstrass::Affine};
 use ark_ff::PrimeField;
 #[cfg(test)]
 use ark_std::rand::rngs::StdRng;
 
+use crate::garble::conditional_reveal;
+use crate::garble::pairing::KAPPA_B;
 use crate::mac::endo::{ENDO_SIZE, EndoScalar};
 
 /// Leaks a secret if `curve_point` is not in G2.
 pub(crate) fn check_g2_membership(
+    enc_s: Fq,
     curve_point: Affine<g2::Config>,
     g2_mac: &[Affine<g2::Config>],
 ) -> Option<Fq> {
@@ -43,7 +46,7 @@ pub(crate) fn check_g2_membership(
     });
 
     // Recover the secret as the pow_6_lincomb of the phis.
-    let s = EndoScalar::<g1::Config>::pack(phis);
+    let s = enc_s - conditional_reveal::Table::<KAPPA_B>::derive_secret(phis);
     Some(s)
 }
 

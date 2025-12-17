@@ -129,7 +129,11 @@ impl Mac<Input> for InputMac {
 
 /// Given an RNG seed, a domain separation tag for the fixed-key AES hash, and
 /// the verifier key, returns a garbling table and the input MAC key used
-pub fn garble_groth16(rng_seed: u64, verifier_key: VerifierKey) -> (Table, InputMacKey) {
+pub fn garble_groth16(
+    rng_seed: u64,
+    secret: Fq,
+    verifier_key: VerifierKey,
+) -> (Table, InputMacKey) {
     let mut rng = StdRng::seed_from_u64(rng_seed);
     let mut nonce = Nonce::new();
     let unseeded_prg = Aes128::init(&[]);
@@ -139,7 +143,7 @@ pub fn garble_groth16(rng_seed: u64, verifier_key: VerifierKey) -> (Table, Input
         &mut nonce,
         &unseeded_prg,
         &mut rng,
-        Some(&verifier_key),
+        Some(&(secret, verifier_key)),
         &input_mac_key,
     )
     .0;
@@ -174,7 +178,7 @@ pub struct Table {
 }
 
 impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
-    type Aux = VerifierKey;
+    type Aux = (Fq, VerifierKey);
 
     fn garble<P: PRG>(
         parent_nonce: &mut Nonce,
@@ -183,8 +187,8 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         aux: Option<&Self::Aux>,
         input_mac_key: &InputMacKey,
     ) -> (Self, <IdentityMac<Output> as Mac<Output>>::Key) {
-        // The Groth16 verifier key
-        let verifier_key = aux.unwrap();
+        // The secret that will be conditionally revealed, and the Groth16 verifier key
+        let (secret, verifier_key) = aux.unwrap();
 
         // Sample random MAC keys and auxiliary values for the pairing table:
         // - a_ec_mac_key: used as the output key for field_to_ec_mac of `A`
@@ -193,9 +197,6 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         // - X: used in the pairing e(A,B) garbling table
         let ((a_ec_mac_key, b_ec_mac_key), pairing_output_mac_key, X) =
             pairing::Table::random_mac_keypair_and_vec(rng);
-
-        // The secret that will be conditionally revealed.
-        let secret = conditional_reveal::Table::derive_secret(&pairing_output_mac_key);
 
         // Construct c_ec_mac_key to use the same `phi`s as pairing_output_mac_key.
         // c_ec_mac_key is used as the output key for field_to_ec_mac of `C`
@@ -224,7 +225,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
             parent_nonce,
             prg_unseeded,
             rng,
-            Some(&secret),
+            Some(secret),
             // Input MAC key for the (x, y) coordinates of `A`
             &input_mac_key.A,
         )
@@ -248,7 +249,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
             parent_nonce,
             prg_unseeded,
             rng,
-            Some(&Fq2::from_base_prime_field(secret)),
+            Some(&Fq2::from_base_prime_field(*secret)),
             // Input MAC key for the (x, y) coordinates of `B`
             &input_mac_key.B,
         )
@@ -272,7 +273,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
             parent_nonce,
             prg_unseeded,
             rng,
-            Some(&secret),
+            Some(secret),
             // Input MAC key for the (x, y) coordinates of `C`
             &input_mac_key.C,
         )
@@ -307,7 +308,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
                 parent_nonce,
                 prg_unseeded,
                 rng,
-                None,
+                Some(secret),
                 &input_mac_key,
             )
             .0
@@ -378,6 +379,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
                 IdentityMac(PhantomData),
             );
         } else if let Some(s) = check_g2_membership(
+            self.conditional_reveal.enc_s,
             B,
             &b_ec_mac
                 .iter()
@@ -463,6 +465,7 @@ fn test_valid_snark() {
     .inverse()
     .unwrap();
 
+    let secret = Fq::rand(&mut rng);
     let verifier_key = VerifierKey { G1, H1, c };
 
     let input_mac_key = InputMacKey::random_key(&mut rng);
@@ -470,7 +473,7 @@ fn test_valid_snark() {
         &mut Nonce::new(),
         &unseeded_prg,
         &mut rng,
-        Some(&verifier_key),
+        Some(&(secret, verifier_key)),
         &input_mac_key,
     )
     .0;
@@ -491,7 +494,6 @@ fn test_valid_snark() {
 /// `secret`.
 fn test_invalid_groth16() {
     use ark_ec::PrimeGroup;
-    use ark_ff::{BigInteger, PrimeField};
 
     const SEED: u64 = 0;
     let unseeded_prg = Aes128::init(&[]);
@@ -500,6 +502,7 @@ fn test_invalid_groth16() {
 
     let input = InputMac::random_input(&mut rng);
 
+    let secret = Fq::rand(&mut rng);
     let verifier_key = VerifierKey {
         G1: G1Projective::rand(&mut rng),
         H1: G2Projective::rand(&mut rng),
@@ -512,7 +515,7 @@ fn test_invalid_groth16() {
         &mut Nonce::new(),
         &unseeded_prg,
         &mut rng,
-        Some(&verifier_key),
+        Some(&(secret, verifier_key)),
         &input_mac_key,
     )
     .0;
@@ -525,14 +528,7 @@ fn test_invalid_groth16() {
         .0;
     clear_set();
 
-    let hash_s = table.conditional_reveal.hash_s;
-
-    let bytes = output.into_bigint().to_bytes_le();
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(&bytes);
-    let hash_output = *hasher.finalize().as_bytes();
-
-    assert_eq!(hash_output.to_vec(), hash_s);
+    assert_eq!(output, secret);
 }
 
 #[test]
@@ -547,6 +543,7 @@ fn test_malformed_curve_points() {
     let unseeded_prg = Aes128::init(&[]);
 
     let mut rng = StdRng::seed_from_u64(SEED);
+    let secret = Fq::rand(&mut rng);
 
     // Evaluate the same circuit on differently malformed inputs, check that
     // we recover the same secret
@@ -571,7 +568,7 @@ fn test_malformed_curve_points() {
         &mut Nonce::new(),
         &unseeded_prg,
         &mut rng,
-        Some(&verifier_key),
+        Some(&(secret, verifier_key)),
         &input_mac_key,
     )
     .0;
@@ -668,6 +665,7 @@ fn test_groth16_serde_roundtrip() {
     let unseeded_prg = Aes128::init(&[]);
 
     let mut rng = StdRng::seed_from_u64(SEED);
+    let secret = Fq::rand(&mut rng);
 
     let input = InputMac::random_input(&mut rng);
 
@@ -677,7 +675,7 @@ fn test_groth16_serde_roundtrip() {
         c: Bn254::pairing(G1Projective::rand(&mut rng), G2Projective::generator()).0,
     };
 
-    let (original_table, input_mac_key) = garble_groth16(SEED, verifier_key);
+    let (original_table, input_mac_key) = garble_groth16(SEED, secret, verifier_key);
 
     let input_mac: InputMac = input_mac_key.encode(&input);
 

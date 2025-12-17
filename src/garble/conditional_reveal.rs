@@ -1,5 +1,5 @@
 //! The conditional_reveal table stores the MAC of 1 `one_mac`, and a hash
-//! of the secret `hash_s`.
+//! of the secret `enc_s`.
 //!
 //! When evaluated on an input != one and its MAC, it returns the `secret`.
 
@@ -7,7 +7,10 @@ use std::marker::PhantomData;
 
 use ark_bn254::{Bn254, Fq, Fq12, g1::Config as G1Config};
 use ark_ec::pairing::Pairing;
-use ark_ff::{AdditiveGroup, BigInteger, Field, Fp12, PrimeField, batch_inversion};
+use ark_ff::{
+    AdditiveGroup, BigInteger, Field, Fp12, PrimeField, batch_inversion,
+    field_hashers::{DefaultFieldHasher, HashToField},
+};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::rngs::StdRng;
 
@@ -30,7 +33,7 @@ pub(crate) type Output = Fq;
 #[derive(CanonicalSerialize, CanonicalDeserialize)]
 pub struct Table<const KAPPA: usize> {
     pub(crate) one_mac: InputMac<KAPPA>,
-    pub hash_s: Vec<u8>,
+    pub enc_s: Fq,
 }
 
 impl<const KAPPA: usize> Table<KAPPA> {
@@ -63,41 +66,37 @@ impl<const KAPPA: usize> Table<KAPPA> {
         key.try_into().unwrap_or_else(|_| panic!())
     }
 
-    pub(crate) fn derive_secret(input_mac_key: &InputMacKey<KAPPA>) -> Fq {
-        EndoScalar::<G1Config>::pack(input_mac_key.iter().map(|key| key.phi.clone()))
+    pub(crate) fn derive_secret<I>(phis: I) -> Fq
+    where
+        I: IntoIterator<Item = EndoScalar<G1Config>>,
+        I::IntoIter: DoubleEndedIterator,
+    {
+        let packed_phis = EndoScalar::<G1Config>::pack(phis);
+        let hasher = <DefaultFieldHasher<blake3::Hasher> as HashToField<Fq>>::new(&[]);
+        hasher.hash_to_field::<1>(&packed_phis.into_bigint().to_bytes_le())[0]
     }
 }
 
 impl<const KAPPA: usize> Circuit<Input, InputMac<KAPPA>, Output, IdentityMac<Output>>
     for Table<KAPPA>
 {
-    type Aux = ();
+    type Aux = Fq;
 
     fn garble<P: PRG>(
         _parent_nonce: &mut Nonce,
         _prg_unseeded: &P::Unseeded,
         _rng: &mut StdRng,
-        _aux: Option<&Self::Aux>,
+        aux: Option<&Self::Aux>,
         input_mac_key: &InputMacKey<KAPPA>,
     ) -> (Self, IdentityMacKey) {
         let one_mac = input_mac_key.encode(&Fp12::ONE);
-
-        let hash_s = {
-            let s = Self::derive_secret(input_mac_key);
-            let bytes = s.into_bigint().to_bytes_le();
-
-            let mut hasher = blake3::Hasher::new();
-            hasher.update(&bytes);
-            *hasher.finalize().as_bytes()
+        let secret = aux.unwrap();
+        let enc_s = {
+            let s = Self::derive_secret(input_mac_key.iter().map(|key| key.phi.clone()));
+            s + secret
         };
 
-        (
-            Self {
-                one_mac,
-                hash_s: hash_s.to_vec(),
-            },
-            IdentityMacKey,
-        )
+        (Self { one_mac, enc_s }, IdentityMacKey)
     }
 
     fn evaluate<P: PRG>(
@@ -141,7 +140,7 @@ impl<const KAPPA: usize> Circuit<Input, InputMac<KAPPA>, Output, IdentityMac<Out
         });
 
         // Recover the secret as the pow_n_lincomb of the phis.
-        let s = EndoScalar::<G1Config>::pack(phis);
+        let s = self.enc_s - Self::derive_secret(phis);
         (s, IdentityMac(PhantomData))
     }
 }
@@ -157,6 +156,7 @@ fn test_conditional_reveal() {
     let unseeded_prg = Aes128::init(&[]);
 
     let mut rng = StdRng::seed_from_u64(SEED);
+    let secret = Fq::rand(&mut rng);
 
     let input = Input::rand(&mut rng);
     let input_mac_key = InputMacKey::random_key(&mut rng);
@@ -166,22 +166,14 @@ fn test_conditional_reveal() {
         &mut Nonce::new(),
         &unseeded_prg,
         &mut rng,
-        None,
+        Some(&secret),
         &input_mac_key,
     )
     .0;
-    let expected_hash_s = &table.hash_s;
 
     let output = table
         .evaluate::<Aes128>(&mut Nonce::new(), &unseeded_prg, &input, &input_mac)
         .0;
 
-    let hash_output = {
-        let bytes = output.into_bigint().to_bytes_le();
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(&bytes);
-        *hasher.finalize().as_bytes()
-    };
-
-    assert_eq!(hash_output.as_slice(), expected_hash_s);
+    assert_eq!(output, secret);
 }
