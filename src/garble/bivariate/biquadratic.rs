@@ -40,11 +40,11 @@ where
     F: Field<BasePrimeField = Fq> + NumBits + FromBits<bool, F> + Random,
 {
     pub(crate) fn c_prime_indices(cs: &[bool; 6]) -> BTreeSet<usize> {
-        //   c'0 + c'1 X + c'2 Y + c'3 XY + c'4 X^2 + c'5 Y^2 + c'6(Y) X
+        //   c'0 + c'1 X + c'2 Y + c'3 X^2 + c'4 XY + c'5 Y^2 + c'6(Y) X
         // + c'7(X) X + c'8(Y) Y + c'9(X) + c'10(Y)
         let mut c_prime_indices = BTreeSet::new();
 
-        let [constant, x, y, xy, x_sq, y_sq] = cs;
+        let [constant, x, y, x_sq, xy, y_sq] = cs;
         if *constant {
             c_prime_indices.insert(0);
         }
@@ -61,17 +61,17 @@ where
             c_prime_indices.insert(10);
         }
 
-        // # x y -> (c_3, c_6, c_9)
-        if *xy {
+        // # x^2 -> (c_3, c_7, c_9)
+        if *x_sq {
             c_prime_indices.insert(3);
-            c_prime_indices.insert(6);
+            c_prime_indices.insert(7);
             c_prime_indices.insert(9);
         }
 
-        // # x^2 -> (c_4, c_7, c_9)
-        if *x_sq {
+        // # x y -> (c_4, c_6, c_9)
+        if *xy {
             c_prime_indices.insert(4);
-            c_prime_indices.insert(7);
+            c_prime_indices.insert(6);
             c_prime_indices.insert(9);
         }
 
@@ -85,7 +85,7 @@ where
         c_prime_indices
     }
 
-    //   c'0 + c'1 X + c'2 Y + c'3 XY + c'4 X^2 + c'5 Y^2 + c'6(Y) X
+    //   c'0 + c'1 X + c'2 Y + c'3 X^2 + c'4 XY + c'5 Y^2 + c'6(Y) X
     // + c'7(X) X + c'8(Y) Y + c'9(X) + c'10(Y)
     fn coord(input: &Input<F>, c_primes: &[Option<F>; 11]) -> F {
         let Input { x, y } = input;
@@ -107,8 +107,8 @@ where
         c_prime_0
             + c_prime_1 * x
             + c_prime_2 * y
-            + c_prime_3 * x * y
-            + c_prime_4 * x.square()
+            + c_prime_3 * x.square()
+            + c_prime_4 * x * y
             + c_prime_5 * y.square()
             + c_prime_6 * x
             + c_prime_7 * x
@@ -117,12 +117,12 @@ where
             + c_prime_10
     }
 
-    // c_0 + c_1 X + c_2 Y + c_3 XY + c_4 X^2 + c_5 Y^2
+    // c_0 + c_1 X + c_2 Y + c_3 X^2 + c_4 XY + c_5 Y^2
     #[cfg(test)]
     fn coord_plaintext(input: &Input<F>, c: &[F; 6]) -> F {
         let Input { x, y } = input;
 
-        c[0] + c[1] * x + c[2] * y + c[3] * x * y + c[4] * x.square() + c[5] * y.square()
+        c[0] + c[1] * x + c[2] * y + c[3] * x.square() + c[4] * x * y + c[5] * y.square()
     }
 }
 
@@ -155,7 +155,7 @@ where
 
         // Construct an adaptor table from input_mac_key.y, to
         // a triple of DigitMacKey's using:
-        // - { phi: -r_3, k: r_6 }
+        // - { phi: -r_4, k: r_6 }
         // - { phi: -r_5, k: r_8 }
         // - { phi: -(r_2 + r_8), k: r_10 }
         let y_adaptors = {
@@ -165,14 +165,14 @@ where
                     &mut nonce,
                     prg_unseeded,
                     rng,
-                    Some(&-rs[3]),
+                    Some(&-rs[4]),
                     &input_mac_key.y,
                 );
                 rs[6] = output_mac_key.from_bits_k();
 
                 Some(table)
             } else {
-                assert_eq!(rs[3], F::ZERO);
+                assert_eq!(rs[4], F::ZERO);
                 assert_eq!(rs[6], F::ZERO);
 
                 None
@@ -221,7 +221,7 @@ where
 
         // Construct an adaptor table from input_mac_key.x, to
         // a pair of DigitMacKey's using:
-        // - { phi: -r_4, k: r_7 }
+        // - { phi: -r_3, k: r_7 }
         // - { phi: -(r_1 + r_6 + r_7), k: r_9 }
         let x_adaptors = {
             // c'_7
@@ -230,14 +230,14 @@ where
                     &mut nonce,
                     prg_unseeded,
                     rng,
-                    Some(&-rs[4]),
+                    Some(&-rs[3]),
                     &input_mac_key.x,
                 );
                 rs[7] = output_mac_key.from_bits_k();
 
                 Some(table)
             } else {
-                assert_eq!(rs[4], F::ZERO);
+                assert_eq!(rs[3], F::ZERO);
                 assert_eq!(rs[7], F::ZERO);
                 None
             };

@@ -23,12 +23,11 @@ use crate::{
     garble::{
         Circuit, Nonce,
         bivariate::{self, curve_membership},
-        conditional_reveal, field_mac_to_ec_mac,
-        g2_subgroup_check::check_g2_membership,
+        conditional_reveal, field_mac_to_ec_mac, g2_subgroup_check,
         pairing::{self, KAPPA_A, KAPPA_B},
     },
     mac::{
-        IdentityMac, IdentityMacKey, Mac, MacKey, RandomFromPhi,
+        IdentityMac, IdentityMacKey, IteratedMac, Mac, MacKey, RandomFromPhi,
         endo::{EndoMacKey, EndoMultGroupMac},
     },
     utils::prg::PRG,
@@ -163,8 +162,10 @@ pub struct Table {
     a_curve_check: curve_membership::Table<g1::Config>,
     // Maps input MAC of (B.x, B.y) to iterated MAC of B projective coordinates
     b_ec_mac: field_mac_to_ec_mac::Table<g2::Config, KAPPA_B>,
-    // Checks that B is a valid G2 curve point, leaking `secret` if not
+    // Checks that B is a valid curve point, leaking `secret` if not
     b_curve_check: curve_membership::Table<g2::Config>,
+    // Checks that B is in G2, leaking `secret` if not
+    b_g2_check: g2_subgroup_check::Table,
     // Maps input MAC of (C.x, C.y) to iterated MAC of C projective coordinates
     c_ec_mac: field_mac_to_ec_mac::Table<g1::Config, KAPPA_B>,
     // Checks that C is a valid G1 curve point, leaking `secret` if not
@@ -197,6 +198,57 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         // - X: used in the pairing e(A,B) garbling table
         let ((a_ec_mac_key, b_ec_mac_key), pairing_output_mac_key, X) =
             pairing::Table::random_mac_keypair_and_vec(rng);
+        let enc_s = {
+            let hash_packed_phis = conditional_reveal::Table::<KAPPA_B>::hash_packed_phis(
+                pairing_output_mac_key.iter().map(|key| key.phi.clone()),
+            );
+            hash_packed_phis + secret
+        };
+
+        // Garbling table to check that `A` is a valid G1 curve point.
+        // This table leaks `secret` if `A` is not a valid curve point.
+        let a_curve_check = curve_membership::Table::garble::<P>(
+            parent_nonce,
+            prg_unseeded,
+            rng,
+            Some(secret),
+            // Input MAC key for the (x, y) coordinates of `A`
+            &input_mac_key.A,
+        )
+        .0;
+
+        // Garbling table to check that `B` is a valid G2 curve point.
+        // This table leaks `secret` if `B` is not a valid curve point.
+        let b_curve_check = curve_membership::Table::garble::<P>(
+            parent_nonce,
+            prg_unseeded,
+            rng,
+            Some(&Fq2::from_base_prime_field(*secret)),
+            // Input MAC key for the (x, y) coordinates of `B`
+            &input_mac_key.B,
+        )
+        .0;
+
+        let b_g2_check = g2_subgroup_check::Table::garble::<P>(
+            parent_nonce,
+            prg_unseeded,
+            rng,
+            Some(&enc_s),
+            &b_ec_mac_key,
+        )
+        .0;
+
+        // Garbling table to check that `C`` is a valid G1 curve point.
+        // This table leaks `secret` if `C`` is not a valid curve point.
+        let c_curve_check = curve_membership::Table::garble::<P>(
+            parent_nonce,
+            prg_unseeded,
+            rng,
+            Some(secret),
+            // Input MAC key for the (x, y) coordinates of `C`
+            &input_mac_key.C,
+        )
+        .0;
 
         // Construct c_ec_mac_key to use the same `phi`s as pairing_output_mac_key.
         // c_ec_mac_key is used as the output key for field_to_ec_mac of `C`
@@ -213,19 +265,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
             prg_unseeded,
             rng,
             // The a_ec_mac_key that we sampled earlier
-            Some(&a_ec_mac_key),
-            // Input MAC key for the (x, y) coordinates of `A`
-            &input_mac_key.A,
-        )
-        .0;
-
-        // Garbling table to check that `A` is a valid G1 curve point.
-        // This table leaks `secret` if `A` is not a valid curve point.
-        let a_curve_check = curve_membership::Table::garble::<P>(
-            parent_nonce,
-            prg_unseeded,
-            rng,
-            Some(secret),
+            Some(&(true, a_ec_mac_key.clone())),
             // Input MAC key for the (x, y) coordinates of `A`
             &input_mac_key.A,
         )
@@ -237,19 +277,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
             prg_unseeded,
             rng,
             // The b_ec_mac_key that we sampled earlier
-            Some(&b_ec_mac_key),
-            // Input MAC key for the (x, y) coordinates of `B`
-            &input_mac_key.B,
-        )
-        .0;
-
-        // Garbling table to check that `B` is a valid G2 curve point.
-        // This table leaks `secret` if `B` is not a valid curve point.
-        let b_curve_check = curve_membership::Table::garble::<P>(
-            parent_nonce,
-            prg_unseeded,
-            rng,
-            Some(&Fq2::from_base_prime_field(*secret)),
+            Some(&(false, b_ec_mac_key.clone())),
             // Input MAC key for the (x, y) coordinates of `B`
             &input_mac_key.B,
         )
@@ -261,19 +289,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
             prg_unseeded,
             rng,
             // The c_ec_mac_key that we sampled earlier
-            Some(&c_ec_mac_key),
-            // Input MAC key for the (x, y) coordinates of `C`
-            &input_mac_key.C,
-        )
-        .0;
-
-        // Garbling table to check that `C`` is a valid G1 curve point.
-        // This table leaks `secret` if `C`` is not a valid curve point.
-        let c_curve_check = curve_membership::Table::garble::<P>(
-            parent_nonce,
-            prg_unseeded,
-            rng,
-            Some(secret),
+            Some(&(false, c_ec_mac_key.clone())),
             // Input MAC key for the (x, y) coordinates of `C`
             &input_mac_key.C,
         )
@@ -282,14 +298,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         // Garbling table for the pairing e(A, B). It uses a_ec_mac_key,
         // b_ec_mac_key as input MAC keys, and pairing_output_mac_key as the output
         // MAC key.
-        let pairing = pairing::Table::garble::<P>(
-            parent_nonce,
-            prg_unseeded,
-            rng,
-            Some(&(X, pairing_output_mac_key.clone())),
-            &(a_ec_mac_key, b_ec_mac_key),
-        )
-        .0;
+        let pairing = pairing::Table::garble((X, pairing_output_mac_key.clone())).0;
 
         // Garbling table for the conditional revelation of `secret`.
         let conditional_reveal = {
@@ -304,14 +313,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
                 &c_ec_mac_key,
             );
 
-            conditional_reveal::Table::garble::<P>(
-                parent_nonce,
-                prg_unseeded,
-                rng,
-                Some(secret),
-                &input_mac_key,
-            )
-            .0
+            conditional_reveal::Table::garble(enc_s, &input_mac_key).0
         };
 
         (
@@ -320,6 +322,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
                 a_curve_check,
                 b_ec_mac,
                 b_curve_check,
+                b_g2_check,
                 c_ec_mac,
                 c_curve_check,
                 pairing,
@@ -343,12 +346,6 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         // The Groth16 input (A, B, C).
         let Input { A, B, C } = *input;
 
-        // Evaluate the field_to_ec_mac table for `A`.
-        let a_ec_mac = self
-            .a_ec_mac
-            .evaluate::<P>(parent_nonce, prg_unseeded, &A.into(), &input_mac.A)
-            .1;
-
         // Evaluate the curve validity check table for `A`. This evaluates to
         // `secret` if `A` is not a valid curve point.
         let a_curve_check = self
@@ -359,12 +356,6 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         if !a_curve_check.is_zero() {
             return (a_curve_check, IdentityMac(PhantomData));
         }
-
-        // Evaluate the field_to_ec_mac table for `B`.
-        let b_ec_mac = self
-            .b_ec_mac
-            .evaluate::<P>(parent_nonce, prg_unseeded, &B.into(), &input_mac.B)
-            .1;
 
         // Evaluate the curve validity check table for `B`. This evaluates to
         // `secret` if `B` is not a valid curve point.
@@ -378,19 +369,8 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
                 b_curve_check.to_base_prime_field_elements().next().unwrap(),
                 IdentityMac(PhantomData),
             );
-        } else if let Some(s) = check_g2_membership(
-            self.conditional_reveal.enc_s,
-            B,
-            b_ec_mac.iter().map(|endo_mac| **endo_mac),
-        ) {
-            return (s, IdentityMac(PhantomData));
         }
 
-        // Evaluate the field_to_ec_mac table for `C`.
-        let c_ec_mac = self
-            .c_ec_mac
-            .evaluate::<P>(parent_nonce, prg_unseeded, &C.into(), &input_mac.C)
-            .1;
         // Evaluate the curve validity check table for `C`. This evaluates to
         // `secret` if `C` is not a valid curve point.
         let c_curve_check = self
@@ -402,36 +382,74 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
             return (c_curve_check, IdentityMac(PhantomData));
         }
 
-        // Evaluate the pairing of (A, B)
-        let AB_mac = self
-            .pairing
-            .evaluate::<P>(parent_nonce, prg_unseeded, &(A, B), &(a_ec_mac, b_ec_mac))
+        // Evaluate the field_to_ec_mac table for `A`.
+        let a_ec_mac = self
+            .a_ec_mac
+            .evaluate::<P>(parent_nonce, prg_unseeded, &A.into(), &input_mac.A)
+            .1;
+
+        // Evaluate the field_to_ec_mac table for `B`.
+        let b_ec_mac = self
+            .b_ec_mac
+            .evaluate::<P>(parent_nonce, prg_unseeded, &B.into(), &input_mac.B)
+            .1;
+
+        let b_g2_check = self
+            .b_g2_check
+            .evaluate::<P>(parent_nonce, prg_unseeded, &B, &b_ec_mac)
+            .0;
+
+        if !b_g2_check.is_zero() {
+            return (b_g2_check, IdentityMac(PhantomData));
+        }
+
+        // Evaluate the field_to_ec_mac table for `C`.
+        let c_ec_mac = self
+            .c_ec_mac
+            .evaluate::<P>(parent_nonce, prg_unseeded, &C.into(), &input_mac.C)
             .1;
 
         // Compute the pairing e(A,B) e(C, H_1) on the input A, B, C
         let conditional_reveal_input = self.verifier_key.pairing(input);
 
         // Compute the pairing e(A,B) e(C, H_1) on the MACs of A, B, C
-        let conditional_reveal_mac: Box<[EndoMultGroupMac; KAPPA_B]> = {
-            let mut conditional_reveal_mac = Vec::with_capacity(KAPPA_B);
-            (0..KAPPA_B).for_each(|idx| {
-                let AB = &AB_mac[idx];
-                let C = &c_ec_mac[idx];
-                let mac = (Bn254::multi_pairing(vec![**C], vec![H1]).0 * **AB).into();
-                conditional_reveal_mac.push(mac);
+        let conditional_reveal_macs: Vec<IteratedMac<Fq12, EndoMultGroupMac, KAPPA_B>> = {
+            let b_ec_macs = [b_ec_mac.clone(), -b_ec_mac.clone()];
+            let c_ec_macs = [c_ec_mac.clone(), -c_ec_mac.clone()];
+
+            let mut macs = Vec::with_capacity(KAPPA_B);
+
+            b_ec_macs.iter().for_each(|b_ec_mac| {
+                c_ec_macs.iter().for_each(|c_ec_mac| {
+                    // Evaluate the pairing of (A, B)
+                    let AB_mac = self
+                        .pairing
+                        .evaluate(&(A, B), &(a_ec_mac.clone(), b_ec_mac.clone()))
+                        .1;
+
+                    let conditional_reveal_mac: Box<[EndoMultGroupMac; KAPPA_B]> = {
+                        let mut conditional_reveal_mac = Vec::with_capacity(KAPPA_B);
+                        (0..KAPPA_B).for_each(|idx| {
+                            let AB = &AB_mac[idx];
+                            let C = &c_ec_mac[idx];
+                            let mac = (Bn254::multi_pairing(vec![**C], vec![H1]).0 * **AB).into();
+                            conditional_reveal_mac.push(mac);
+                        });
+                        conditional_reveal_mac
+                            .try_into()
+                            .unwrap_or_else(|_| panic!())
+                    };
+
+                    macs.push(conditional_reveal_mac.into())
+                })
             });
-            conditional_reveal_mac
-                .try_into()
-                .unwrap_or_else(|_| panic!())
+
+            macs
         };
 
         // Evaluate the conditional reveal circuit.
-        self.conditional_reveal.evaluate::<P>(
-            parent_nonce,
-            prg_unseeded,
-            &conditional_reveal_input,
-            &conditional_reveal_mac.into(),
-        )
+        self.conditional_reveal
+            .evaluate(&conditional_reveal_input, &conditional_reveal_macs)
     }
 }
 

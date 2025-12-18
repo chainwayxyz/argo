@@ -3,12 +3,12 @@
 use core::panic;
 use std::marker::PhantomData;
 
-use ark_bn254::{Bn254, Fq12, Fr, G1Projective, G2Affine, G2Projective, g1, g2};
+use ark_bn254::{Bn254, Fq2, Fq12, Fr, G1Projective, G2Affine, G2Projective, g1, g2};
 use ark_ec::{
     AffineRepr, CurveGroup, PrimeGroup, ScalarMul,
     pairing::{Pairing, PairingOutput},
     scalar_mul::glv::GLVConfig,
-    short_weierstrass::Affine,
+    short_weierstrass::{Affine, Projective},
 };
 use ark_ff::{AdditiveGroup, Field, PrimeField, UniformRand};
 use ark_std::rand::rngs::StdRng;
@@ -16,15 +16,14 @@ use lazy_static::lazy_static;
 use num_bigint::BigInt;
 
 use crate::{
-    garble::{Circuit, Nonce},
     mac::{
-        Mac, MacKey, Random,
+        Mac, MacKey,
         endo::{
             ENDO_SIZE, EndoMacKey, EndoMultGroupMac, EndoMultGroupMacKey, EndoScalar,
             IteratedEndoMac, IteratedEndoMultGroupMac,
         },
     },
-    utils::{bits::pow_n_lincomb, prg::PRG},
+    utils::bits::pow_n_lincomb,
 };
 
 lazy_static! {
@@ -33,12 +32,16 @@ lazy_static! {
             vec![<G1Projective as PrimeGroup>::generator()],
             vec![G2Projective::generator()],
         );
+    /// [r]P, where P is a point on E'/Fp2 with x-coordinate = 1
+    pub static ref R_MUL_COFACTOR_GENERATOR: Affine<g2::Config> = (Affine::get_point_from_x_unchecked(Fq2::ONE, true).unwrap().mul_bigint(Fr::MODULUS)).into();
 }
 
-// KAPPA_B is log_7(2^128)
-pub(crate) const KAPPA_B: usize = 46;
+// KAPPA_B is 1 + log_7(2^128)
+pub(crate) const KAPPA_B: usize = 46 + 1;
 // KAPPA_A is ceil(log_7(r))
 pub(crate) const KAPPA_A: usize = 92;
+// This works only up to KAPPA_B = 65;
+pub(crate) const GENERATOR_EXPONENT: usize = 3;
 
 pub(crate) type Input = (Affine<g1::Config>, Affine<g2::Config>);
 pub(crate) type InputMacKey = (
@@ -80,21 +83,13 @@ impl MacKey<Input, InputMac> for InputMacKey {
     }
 }
 
-pub(crate) struct Table(pub(crate) Box<[G2Affine; KAPPA_A]>);
+pub(crate) struct Table(pub(crate) Box<[G2Affine; KAPPA_B]>);
 
-impl Circuit<Input, InputMac, Output, OutputMac> for Table {
-    type Aux = (Box<[Fr; KAPPA_A]>, OutputMacKey);
+impl Table {
+    pub(crate) fn garble(aux: (Box<[Fr; KAPPA_B]>, OutputMacKey)) -> (Self, OutputMacKey) {
+        let (X, output_mac_key) = aux;
 
-    fn garble<P: PRG>(
-        _parent_nonce: &mut Nonce,
-        _prg_unseeded: &P::Unseeded,
-        _rng: &mut StdRng,
-        aux: Option<&Self::Aux>,
-        _input_mac_key: &InputMacKey,
-    ) -> (Self, OutputMacKey) {
-        let (X, output_mac_key) = aux.unwrap();
-
-        let mut commitment = Box::new([G2Affine::zero(); KAPPA_A]);
+        let mut commitment = Box::new([G2Affine::zero(); KAPPA_B]);
 
         let X = G2Projective::generator().batch_mul(X.as_slice());
         commitment.copy_from_slice(&X);
@@ -102,15 +97,21 @@ impl Circuit<Input, InputMac, Output, OutputMac> for Table {
         (Self(commitment), output_mac_key.clone())
     }
 
-    fn evaluate<P: PRG>(
-        &self,
-        _parent_nonce: &mut Nonce,
-        _prg_unseeded: &P::Unseeded,
-        input: &Input,
-        input_mac: &InputMac,
-    ) -> (Output, OutputMac) {
+    pub(crate) fn evaluate(&self, input: &Input, input_mac: &InputMac) -> (Output, OutputMac) {
         let (A, B) = input;
         let (A_mac, B_mac) = input_mac;
+
+        // Subtract off GENERATOR_EXPONENT^i * R_MUL_COFACTOR_GENERATOR from B_mac
+        let B_mac = B_mac.iter().enumerate().map(|(i, mac)| {
+            **mac
+                - R_MUL_COFACTOR_GENERATOR.mul_bigint(
+                    BigInt::from(GENERATOR_EXPONENT)
+                        .pow(i as u32)
+                        .to_u64_digits()
+                        .1,
+                )
+        });
+
         let output = Bn254::pairing(A, B);
 
         let S = pow_n_lincomb(
@@ -119,11 +120,9 @@ impl Circuit<Input, InputMac, Output, OutputMac> for Table {
         );
 
         let mut output_mac = Vec::with_capacity(KAPPA_B);
-        (0..KAPPA_B).for_each(|i| {
-            let B_mac = *B_mac[i];
-            let X = self.0[i];
-
-            let pairing = Bn254::multi_pairing(vec![*A, S.into_affine()], vec![B_mac, X]);
+        B_mac.zip(self.0.iter()).for_each(|(B_mac, X)| {
+            let pairing =
+                Bn254::multi_pairing(vec![*A, S.into_affine()], vec![B_mac.into_affine(), *X]);
             output_mac.push(EndoMultGroupMac::from(pairing.0));
         });
 
@@ -203,11 +202,62 @@ impl Table {
         endoscalars.try_into().unwrap_or_else(|_| panic!())
     }
 
+    // r (phi B + K) = phi (r B) + (r K) = r_m
+    // -r (phi B + K) = phi (-r B) - (r K) = -r_m
+    //
+    // We will publish r_K = r K in "cofactor group"
+    // We will CDS decode r_m and -r_m
+    //    i.e. we will take r_m - r_K =? phi(r B) for any phi in { NegInf, ... }
+    //         we will take -r_m - r_K =? phi(r B) for any phi in { NegInf, ... }
+    // At least one of them will always decode
+    //.   i.e. we will always find a phi in the first check or one in the second check
+    // Sometimes, we will find they *both* decode
+    //.   i.e. WLOG r_m is the correct one so
+    //.        r_m - r_K = phi (r B)
+    //.        BUT by coincidence on B
+    //.        -r_m - r_K = -(phi (r B)) - 2 r_K = psi (r B)
+    // This is because the cofactor group has small subgroups (technically could also occur in the Gt decoding)
+    // To solve this, we need to ensure the r_K are chosen so that this can occur at most one time
+    //    i.e. for any single r_K we can always cause a decoding error by maliciously choosing B
+    //.        pick a psi != phi, and let r B = -2 / (phi + psi) r_K
+    //.        but we can ensure that *at most* most one failure can occur
+    // for all (phi, psi, phi', psi') where phi != -psi and phi' != -psi'
+    // must have (phi + psi) r_(K,i) != (phi' + psi') r_(K,j)
+    // Note: r_K does not have to be random
+    // We should also choose the phi such that given n-1 of them we can always recover the last one
+    // i.e. the sum mod 7 is always zero
+    //
+    // Let G' = r * G
+    // Let K_i = (x * r_i * H) + GENERATOR_EXPONENT^i * G'
+    fn derive_b_ks(g2_b_ks: &[Affine<g2::Config>]) -> [Affine<g2::Config>; KAPPA_B] {
+        assert_eq!(g2_b_ks.len(), KAPPA_B);
+
+        let b_ks = g2_b_ks
+            .iter()
+            .enumerate()
+            .map(|(i, g2_b_k)| {
+                *g2_b_k
+                    + R_MUL_COFACTOR_GENERATOR
+                        .mul_bigint(
+                            BigInt::from(GENERATOR_EXPONENT as u8)
+                                .pow(i as u32)
+                                .to_u64_digits()
+                                .1,
+                        )
+                        .into_affine()
+            })
+            .collect::<Vec<_>>();
+
+        let b_ks = Projective::<g2::Config>::normalize_batch(&b_ks);
+
+        b_ks.try_into().unwrap()
+    }
+
     pub(crate) fn random_mac_keypair_and_vec(
         rng: &mut StdRng,
-    ) -> (InputMacKey, OutputMacKey, Box<[Fr; KAPPA_A]>) {
-        // Sample `KAPPA_A` random `r`s
-        let mut rs = [Fr::ZERO; KAPPA_A];
+    ) -> (InputMacKey, OutputMacKey, Box<[Fr; KAPPA_B]>) {
+        // Sample `KAPPA_B` random `r`s
+        let mut rs = Box::new([Fr::ZERO; KAPPA_B]);
         rs.iter_mut().for_each(|r| *r = Fr::rand(rng));
 
         // Sample x uniformly at random
@@ -233,13 +283,11 @@ impl Table {
             assert_eq!(x, expected_x);
         }
 
-        let x_rs: Vec<_> = rs.iter().map(|r| *r * x).collect();
+        let g2_B_ks_scalar: Vec<_> = rs.iter().map(|r| -*r * x).collect();
+        let g2_B_ks = G2Projective::generator().batch_mul(&g2_B_ks_scalar);
+        let B_ks = Self::derive_b_ks(&g2_B_ks);
 
-        let neg_B_ks = G2Projective::generator().batch_mul(&x_rs);
-
-        let B_phis: Vec<_> = (0..KAPPA_B)
-            .map(|_| EndoScalar::<g2::Config>::random(rng))
-            .collect();
+        let B_phis = EndoScalar::<g2::Config>::sample_endoscalars_with_checksum::<KAPPA_B>(rng);
 
         let k =
             pow_n_lincomb::<_, Fr, Fr>(A_ks_scalar, EndoScalar::<g1::Config>::two_minus_omega());
@@ -278,10 +326,10 @@ impl Table {
 
         let B_mac_key: [EndoMacKey<g2::Config>; KAPPA_B] = B_phis
             .iter()
-            .zip(neg_B_ks.iter())
-            .map(|(phi, &neg_k)| EndoMacKey {
+            .zip(B_ks.iter())
+            .map(|(phi, &k)| EndoMacKey {
                 phi: phi.clone(),
-                k: -neg_k,
+                k,
             })
             .collect::<Vec<_>>()
             .try_into()
@@ -298,23 +346,91 @@ impl Table {
             .try_into()
             .unwrap_or_else(|_| panic!());
 
-        (
-            (A_mac_key, B_mac_key),
-            output_mac_key,
-            rs.try_into().unwrap_or_else(|_| panic!()),
-        )
+        ((A_mac_key, B_mac_key), output_mac_key, rs)
+    }
+}
+
+#[allow(unused)]
+fn test_generator() {
+    use ark_bn254::Fq2;
+    use num_bigint::Sign;
+
+    // # E'/Fp2 = n = h * r
+    // Prime factors of h = 21888242871839275222246405745257275088844257914179612981679871602714643921549
+    let prime_factors = [
+        BigInt::from(10069),
+        BigInt::from(5864401),
+        // 1875725156269
+        BigInt::new(Sign::Plus, vec![3119415213, 436]),
+        // 197620364512881247228717050342013327560683201906968909
+        BigInt::new(
+            Sign::Plus,
+            vec![
+                2383251789, 2607680309, 252471992, 3923425572, 1462367600, 135217,
+            ],
+        ),
+    ];
+
+    let r = BigInt::from(Fr::MODULUS);
+
+    // Check: (n / p_k) * G = G'_k != 0
+    let g_ks = (0..4).map(|skip_idx| {
+        let scalar = prime_factors
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != skip_idx)
+            .map(|(_, factor)| factor)
+            .product::<BigInt>();
+        let g_k = R_MUL_COFACTOR_GENERATOR.mul_bigint(scalar.to_u64_digits().1);
+        assert_ne!(g_k, Affine::<g2::Config>::identity());
+        g_k
+    });
+
+    // Check: for all (i != j in KAPPA_B) that (phi + psi) i G'_k != (phi' + psi') j G'_k
+    for g_k in g_ks {
+        for i in 0..KAPPA_B {
+            let i_g_k = g_k.mul_bigint(
+                BigInt::from(GENERATOR_EXPONENT)
+                    .pow(i as u32)
+                    .to_u64_digits()
+                    .1,
+            );
+            for j in (i + 1)..KAPPA_B {
+                let j_g_k = g_k.mul_bigint(
+                    BigInt::from(GENERATOR_EXPONENT)
+                        .pow(j as u32)
+                        .to_u64_digits()
+                        .1,
+                );
+                for phi in EndoScalar::<g2::Config>::iter() {
+                    for psi in EndoScalar::<g2::Config>::iter() {
+                        for phi_prime in EndoScalar::<g2::Config>::iter() {
+                            for psi_prime in EndoScalar::<g2::Config>::iter() {
+                                let lhs = psi.endo(i_g_k.into()) + phi.endo(i_g_k.into());
+                                let rhs =
+                                    psi_prime.endo(j_g_k.into()) + phi_prime.endo(j_g_k.into());
+
+                                let lhs: Affine<g2::Config> = lhs.into();
+                                let rhs: Affine<g2::Config> = rhs.into();
+
+                                if !lhs.is_zero() || !rhs.is_zero() {
+                                    assert_ne!(lhs, rhs);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
 #[test]
 fn test_pairing_circuit() {
-    use crate::garble::Nonce;
-    use aes::Aes128;
     use ark_std::rand::SeedableRng;
 
     for seed in 0..100 {
         let mut rng = StdRng::seed_from_u64(seed);
-        let unseeded_prg = Aes128::init(&[]);
 
         let input = InputMac::random_input(&mut rng);
         let (input_mac_key, output_mac_key, X) = Table::random_mac_keypair_and_vec(&mut rng);
@@ -324,18 +440,9 @@ fn test_pairing_circuit() {
 
         let expected_output_mac = output_mac_key.encode(&output);
 
-        let circuit = Table::garble::<Aes128>(
-            &mut Nonce::new(),
-            &unseeded_prg,
-            &mut rng,
-            Some(&(X, output_mac_key)),
-            &input_mac_key,
-        )
-        .0;
+        let circuit = Table::garble((X, output_mac_key)).0;
 
-        let output_mac = circuit
-            .evaluate::<Aes128>(&mut Nonce::new(), &unseeded_prg, &input, &input_mac)
-            .1;
+        let output_mac = circuit.evaluate(&input, &input_mac).1;
 
         for (expected, mac) in expected_output_mac.iter().zip(output_mac.iter()) {
             assert!(expected == mac);

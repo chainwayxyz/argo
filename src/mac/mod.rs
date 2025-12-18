@@ -1,17 +1,12 @@
-use std::marker::PhantomData;
+use std::{marker::PhantomData, ops::Neg};
 
 use ark_bn254::{Fq, Fq2};
-use ark_ec::scalar_mul::glv::GLVConfig;
 use ark_ff::UniformRand;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use ark_std::rand::{Rng, RngCore, rngs::StdRng};
+use ark_std::rand::{RngCore, rngs::StdRng};
 use derive_more::Deref;
 
-use crate::{
-    garble::Nonce,
-    mac::endo::{ENDO_SIZE, EndoScalar},
-    utils::prg::PRG,
-};
+use crate::{garble::Nonce, utils::prg::PRG};
 
 pub(crate) mod bit;
 pub(crate) mod digit;
@@ -58,11 +53,26 @@ pub trait Encrypt<Message> {
     ) -> Message;
 }
 
-#[derive(Deref)]
+#[derive(Deref, Clone)]
 pub(crate) struct IteratedMac<Value, M: Mac<Value>, const N: usize> {
     #[deref]
     pub(crate) value: Box<[M; N]>,
     _marker: PhantomData<Value>,
+}
+
+impl<Value, M: Mac<Value> + Clone + Neg<Output = M>, const N: usize> Neg
+    for IteratedMac<Value, M, N>
+{
+    type Output = Self;
+
+    fn neg(self) -> Self::Output {
+        let mut value = self.value;
+        value.iter_mut().for_each(|v| {
+            *v = -v.clone();
+        });
+
+        value.into()
+    }
 }
 
 impl<Value, M: Mac<Value>, const N: usize> From<Box<[M; N]>> for IteratedMac<Value, M, N> {
@@ -193,12 +203,5 @@ impl Random for [u8; 16] {
         let mut bytes = [0u8; 16];
         rng.fill_bytes(&mut bytes);
         bytes
-    }
-}
-
-impl<G: GLVConfig> Random for EndoScalar<G> {
-    fn random(rng: &mut StdRng) -> EndoScalar<G> {
-        let exp = rng.gen_range(0..ENDO_SIZE);
-        (exp as i8 - 1).into()
     }
 }

@@ -55,9 +55,7 @@ where
     }
 
     fn random_key(rng: &mut StdRng) -> Self {
-        Self {
-            phi: G::rand(rng),
-            k: G::rand(rng),
-        }
+        let phi = G::rand(rng);
+        <Self as RandomFromPhi<G::Scalar, GroupMac<G>>>::random_from_phi(rng, &phi)
     }
 }

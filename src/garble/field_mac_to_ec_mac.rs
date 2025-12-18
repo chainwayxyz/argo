@@ -6,7 +6,7 @@
 //! This is generic over inputs in Fq and Fq2.
 
 use ark_bn254::Fq;
-use ark_ec::{AdditiveGroup, AffineRepr, scalar_mul::glv::GLVConfig, short_weierstrass::Affine};
+use ark_ec::{AffineRepr, scalar_mul::glv::GLVConfig, short_weierstrass::Affine};
 use ark_ff::{Field, batch_inversion};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::rngs::StdRng;
@@ -14,11 +14,11 @@ use ark_std::rand::rngs::StdRng;
 use crate::{
     garble::{
         Circuit, Nonce,
-        bivariate::{Input, InputMac, InputMacKey, biquadratic},
+        bivariate::{Input, InputMac, InputMacKey, Poly, biquadratic},
     },
     mac::{
-        Random,
-        endo::{EndoMac, EndoMacKey, EndoScalar, IteratedEndoMac},
+        Random, RandomFromPhi,
+        endo::{EndoMac, EndoMacKey, IteratedEndoMac},
     },
     utils::{
         bits::{FromBits, NumBits, ToBits},
@@ -36,8 +36,9 @@ where
     C: GLVConfig,
     C::BaseField: Field<BasePrimeField = Fq> + NumBits + FromBits<bool, C::BaseField> + Random,
 {
+    is_full: bool,
     x: Vec<biquadratic::Table<C::BaseField>>,
-    y: Vec<biquadratic::Table<C::BaseField>>,
+    y: Option<Vec<biquadratic::Table<C::BaseField>>>,
     z: Vec<biquadratic::Table<C::BaseField>>,
 }
 
@@ -47,8 +48,9 @@ impl<Config, F, const KAPPA: usize>
 where
     Config: GLVConfig<BaseField = F> + Clone,
     F: Field<BasePrimeField = Fq> + NumBits + ToBits + FromBits<F, F> + FromBits<bool, F> + Random,
+    EndoMacKey<Config>: RandomFromPhi<Affine<Config>, EndoMac<Config>>,
 {
-    type Aux = OutputMacKey<Config, KAPPA>;
+    type Aux = (bool, OutputMacKey<Config, KAPPA>);
 
     fn garble<P: PRG>(
         parent_nonce: &mut Nonce,
@@ -60,48 +62,7 @@ where
         assert_eq!(Config::COEFF_A, F::ZERO);
 
         let mut nonce = parent_nonce.fork();
-        let output_mac_key = aux.unwrap();
-
-        // c_0, c_1 * a, c_2 * b, c_3 * a * b, c_4 * a^2, c_5 * b^2
-        // The `c`s are coeffs of a polynomial to evaluate P -> P + k
-        // The endo_coeffs converts it into a polynomial to evaluate P -> phi * P + k
-        fn endo_coeffs<Config: GLVConfig>(
-            phi: &EndoScalar<Config>,
-            cs: [Config::BaseField; 6],
-            r: Config::BaseField,
-            k: Config::BaseField,
-        ) -> [Config::BaseField; 6] {
-            // If phi = NegInf, just return k
-            match phi {
-                EndoScalar::NegInf(_) => [
-                    k * r,
-                    Config::BaseField::ZERO,
-                    Config::BaseField::ZERO,
-                    Config::BaseField::ZERO,
-                    Config::BaseField::ZERO,
-                    Config::BaseField::ZERO,
-                ],
-                _ => {
-                    let phi = EndoScalar::<Config>::base().pow([phi.as_i8() as u64]);
-                    let (a, b) = {
-                        let phi_sq = phi.square();
-                        (phi_sq.square(), phi_sq * phi)
-                        // phi * (X, Y) = (a * X, b * Y)
-                        // c_0, c_1 * a, c_2 * b, c_3 * a * b, c_4 * a^2, c_5 * b^2
-                    };
-                    let mut coeffs = [Config::BaseField::ZERO; 6];
-                    coeffs
-                        .iter_mut()
-                        .zip([Config::BaseField::ONE, a, b, a * b, a.square(), b.square()].iter())
-                        .zip(cs.iter())
-                        .for_each(|((coeff, v), c)| *coeff = *v * c * r);
-                    coeffs
-                }
-            }
-            // For x, k = P.x
-            // For y, k = P.y
-            // For z, k = P.z
-        }
+        let (is_full, output_mac_key) = aux.unwrap();
 
         fn x_aux<C, F>(mac_key: &EndoMacKey<C>, a2: F) -> ([F; 6], [bool; 6])
         where
@@ -109,30 +70,31 @@ where
             F: Field,
         {
             let B = C::COEFF_B;
-            let cs_flags = [true, true, true, false, true, false];
+            let cs_flags = [true, true, true, true, false, false];
             let (x, y) = mac_key.k.xy().unwrap();
             // f(X, Y) = phi * (X, Y) + K = (a X, b Y) + K
-            let cs = {
-                //  (6, 1)                 # c_0
-                let c_0 = B.double();
-                //  (xQ_^2, xP_)           # c_1
-                let c_1 = x.square();
-                //  (-2*yQ_, yP_)          # c_2
-                let c_2 = -y.double();
-                //  (0, xP_ * yP_)         # c_3 = 0
-                let c_3 = F::ZERO;
-                //  (xQ_, xP_^2)           # c_4
-                let c_4 = x;
-                //  (0, yP_^2)             # c_5 = 0
-                let c_5 = F::ZERO;
+            let mut cs = {
+                //  (6, 1)                 # c0
+                let c0 = B.double();
+                //  (xQ_^2, xP_)           # c1
+                let c1 = x.square();
+                //  (-2*yQ_, yP_)          # c2
+                let c2 = -y.double();
+                //  (xQ_, xP_^2)           # c3
+                let c3 = x;
+                //  (0, xP_ * yP_)         # c4 = 0
+                let c4 = F::ZERO;
+                //  (0, yP_^2)             # c5 = 0
+                let c5 = F::ZERO;
 
-                // scale by random a2 = a^2
-                [c_0 * a2, c_1 * a2, c_2 * a2, c_3 * a2, c_4 * a2, c_5 * a2]
+                Poly::new([c0, c1, c2, c3, c4, c5])
             };
 
-            let cs = endo_coeffs(&mac_key.phi, cs, a2, x);
+            // Scale by random a2 = a^2
+            cs.scale(a2);
+            let cs = mac_key.phi.endo_biquadratic_poly(cs);
 
-            (cs, cs_flags)
+            (cs.0, cs_flags)
         }
 
         fn y_aux<C, F>(mac_key: &EndoMacKey<C>, a3: F) -> ([F; 6], [bool; 6])
@@ -144,26 +106,28 @@ where
             let (x, y) = mac_key.k.xy().unwrap();
 
             let cs_flags = [true, false, true, true, true, true];
-            let cs = {
-                //  (9*yQ_, 1)                  # c_0
-                let c_0 = F::from(3) * B * y;
-                //  (0,   xP_),                 # c_1 = 0
-                let c_1 = F::ZERO;
-                //  (-(yQ_^2 + 9), yP_)         # c_2
-                let c_2 = -(y.square() + F::from(3) * B);
-                //  (-3 * xQ_^2, xP_ * yP_)     # c_3
-                let c_3 = -F::from(3) * x.square();
-                //  (3 * xQ_ * yQ_, xP_^2),     # c_4
-                let c_4 = F::from(3) * x * y;
-                //  (yQ_^2, yP_),               # c_5
-                let c_5 = y;
+            let mut cs = {
+                //  (9*yQ_, 1)                  # c0
+                let c0 = F::from(3) * B * y;
+                //  (0,   xP_),                 # c1 = 0
+                let c1 = F::ZERO;
+                //  (-(yQ_^2 + 9), yP_)         # c2
+                let c2 = -(y.square() + F::from(3) * B);
+                //  (3 * xQ_ * yQ_, xP_^2),     # c3
+                let c3 = F::from(3) * x * y;
+                //  (-3 * xQ_^2, xP_ * yP_)     # c4
+                let c4 = -F::from(3) * x.square();
+                //  (yQ_, yP_^2),               # c5
+                let c5 = y;
 
-                // scale by random a3 = a^3
-                [c_0 * a3, c_1 * a3, c_2 * a3, c_3 * a3, c_4 * a3, c_5 * a3]
+                Poly::new([c0, c1, c2, c3, c4, c5])
             };
-            let cs = endo_coeffs(&mac_key.phi, cs, a3, y);
+            // scale by random a3 = a^3
+            cs.scale(a3);
 
-            (cs, cs_flags)
+            let cs = mac_key.phi.endo_biquadratic_poly(cs);
+
+            (cs.0, cs_flags)
         }
 
         fn z_aux<C, F>(mac_key: &EndoMacKey<C>, a: F) -> ([F; 6], [bool; 6])
@@ -174,23 +138,23 @@ where
             let (x, _) = mac_key.k.xy().unwrap();
             let cs_flags = [true, true, false, false, false, false];
 
-            let cs = {
-                //  (-xQ_,      1)]       # c_0
-                let c_0 = -x;
-                //  (1, xP_)              # c_1
-                let c_1 = F::ONE;
-                let c_2 = F::ZERO;
-                let c_3 = F::ZERO;
-                let c_4 = F::ZERO;
-                let c_5 = F::ZERO;
+            let mut cs = {
+                //  (-xQ_,      1)]       # c0
+                let c0 = -x;
+                //  (1, xP_)              # c1
+                let c1 = F::ONE;
+                let c2 = F::ZERO;
+                let c3 = F::ZERO;
+                let c4 = F::ZERO;
+                let c5 = F::ZERO;
 
-                // scale by random `a`
-                [c_0 * a, c_1 * a, c_2 * a, c_3 * a, c_4 * a, c_5 * a]
+                Poly::new([c0, c1, c2, c3, c4, c5])
             };
+            // scale by random `a`
+            cs.scale(a);
+            let cs = mac_key.phi.endo_biquadratic_poly(cs);
 
-            let cs = endo_coeffs(&mac_key.phi, cs, a, F::ONE);
-
-            (cs, cs_flags)
+            (cs.0, cs_flags)
         }
 
         let mut x = Vec::with_capacity(output_mac_key.len());
@@ -224,20 +188,30 @@ where
             .0;
             x.push(x_table);
 
-            // Scale y coordinate by a^3
-            let a3 = a2 * a;
-            let y_table = biquadratic::Table::garble::<P>(
-                &mut nonce,
-                prg_unseeded,
-                rng,
-                Some(&y_aux(key, a3)),
-                input_mac_key,
-            )
-            .0;
-            y.push(y_table);
+            if *is_full {
+                // Scale y coordinate by a^3
+                let a3 = a2 * a;
+                let y_table = biquadratic::Table::garble::<P>(
+                    &mut nonce,
+                    prg_unseeded,
+                    rng,
+                    Some(&y_aux(key, a3)),
+                    input_mac_key,
+                )
+                .0;
+                y.push(y_table);
+            }
         });
 
-        (Self { x, y, z }, output_mac_key.clone())
+        (
+            Self {
+                is_full: *is_full,
+                x,
+                y: if *is_full { Some(y) } else { None },
+                z,
+            },
+            output_mac_key.clone(),
+        )
     }
 
     fn evaluate<P: PRG>(
@@ -250,14 +224,20 @@ where
         let mut nonce = parent_nonce.fork();
 
         let mut xs = Vec::with_capacity(self.x.len());
-        let mut ys = Vec::with_capacity(self.y.len());
+        let mut ys = Vec::with_capacity(self.x.len());
         let mut zs = Vec::with_capacity(self.z.len());
+
+        let y = if self.is_full {
+            self.y.as_ref().unwrap()
+        } else {
+            &vec![]
+        };
 
         self.x
             .iter()
-            .zip(self.y.iter())
             .zip(self.z.iter())
-            .for_each(|((x_table, y_table), z_table)| {
+            .enumerate()
+            .for_each(|(idx, (x_table, z_table))| {
                 let z_table = z_table
                     .evaluate::<P>(&mut nonce, prg_unseeded, input, input_mac)
                     .0;
@@ -268,10 +248,12 @@ where
                     .0;
                 xs.push(x_table);
 
-                let y_table = y_table
-                    .evaluate::<P>(&mut nonce, prg_unseeded, input, input_mac)
-                    .0;
-                ys.push(y_table);
+                if self.is_full {
+                    let y_table = y[idx]
+                        .evaluate::<P>(&mut nonce, prg_unseeded, input, input_mac)
+                        .0;
+                    ys.push(y_table);
+                }
             });
 
         let mut zs_inv = zs;
@@ -279,12 +261,21 @@ where
 
         let mut macs = Vec::with_capacity(KAPPA);
         xs.into_iter()
-            .zip(ys)
             .zip(zs_inv)
-            .for_each(|((x, y), z_inv)| {
+            .enumerate()
+            .for_each(|(idx, (x, z_inv))| {
                 // Use Jacobian coordinates, so x / z^2, y / z^3
                 let z2 = z_inv.square();
-                let point = Affine::new_unchecked(x * z2, y * z_inv * z2);
+                let x = x * z2;
+
+                let y = if self.is_full {
+                    ys[idx] * z_inv * z2
+                } else {
+                    // y^2 = x^3 + b
+                    (x.square() * x + Config::COEFF_B).sqrt().unwrap()
+                };
+
+                let point = Affine::new_unchecked(x, y);
                 let mac = EndoMac::from(point);
                 macs.push(mac);
             });
@@ -296,7 +287,7 @@ where
 }
 
 #[cfg(test)]
-fn test_field_mac_to_ec_mac<C>()
+fn test_field_mac_to_ec_mac<C>(is_full: bool)
 where
     C: GLVConfig + Clone,
     C::BaseField: Field<BasePrimeField = Fq>
@@ -305,6 +296,7 @@ where
         + Random
         + ToBits
         + FromBits<C::BaseField, C::BaseField>,
+    EndoMacKey<C>: RandomFromPhi<Affine<C>, EndoMac<C>>,
 {
     use crate::{garble::pairing::KAPPA_B, mac::MacKey, utils::prg::aes_ctr::clear_set};
     use aes::Aes128;
@@ -330,7 +322,7 @@ where
         &mut Nonce::new(),
         &unseeded_prg,
         &mut rng,
-        Some(&output_mac_key),
+        Some(&(is_full, output_mac_key)),
         &input_mac_key,
     )
     .0;
@@ -342,16 +334,24 @@ where
     clear_set();
 
     for (expected, evaluated) in output_mac.iter().zip(evaluated_output.iter()) {
-        assert_eq!(**expected, **evaluated);
+        if **expected != **evaluated {
+            if !is_full {
+                assert_eq!(**expected, -**evaluated);
+            } else {
+                panic!()
+            }
+        }
     }
 }
 
 #[test]
 fn test_field_mac_to_ec_mac_g1() {
-    test_field_mac_to_ec_mac::<ark_bn254::g1::Config>();
+    test_field_mac_to_ec_mac::<ark_bn254::g1::Config>(true);
+    test_field_mac_to_ec_mac::<ark_bn254::g1::Config>(false);
 }
 
 #[test]
 fn test_field_mac_to_ec_mac_g2() {
-    test_field_mac_to_ec_mac::<ark_bn254::g2::Config>();
+    test_field_mac_to_ec_mac::<ark_bn254::g2::Config>(true);
+    test_field_mac_to_ec_mac::<ark_bn254::g2::Config>(false);
 }

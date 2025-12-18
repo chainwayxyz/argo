@@ -6,21 +6,20 @@
 use std::marker::PhantomData;
 
 use ark_bn254::{Bn254, Fq, Fq12, g1::Config as G1Config};
-use ark_ec::pairing::Pairing;
+use ark_ec::{pairing::Pairing, scalar_mul::glv::GLVConfig};
 use ark_ff::{
     AdditiveGroup, BigInteger, Field, Fp12, PrimeField, batch_inversion,
     field_hashers::{DefaultFieldHasher, HashToField},
 };
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use ark_std::rand::rngs::StdRng;
 
 use crate::{
-    garble::{Circuit, Nonce, groth16_verifier},
+    garble::groth16_verifier,
     mac::{
         IdentityMac, IdentityMacKey, MacKey,
         endo::{ENDO_SIZE, EndoMacKey, EndoMultGroupMacKey, EndoScalar, IteratedEndoMultGroupMac},
     },
-    utils::prg::PRG,
+    utils::unwrap_single,
 };
 
 /// Input is a single P::TargetField
@@ -66,94 +65,140 @@ impl<const KAPPA: usize> Table<KAPPA> {
         key.try_into().unwrap_or_else(|_| panic!())
     }
 
-    pub(crate) fn derive_secret<I>(phis: I) -> Fq
+    pub(crate) fn hash_packed_phis<I, C: GLVConfig>(phis: I) -> Fq
     where
-        I: IntoIterator<Item = EndoScalar<G1Config>>,
+        I: IntoIterator<Item = EndoScalar<C>>,
         I::IntoIter: DoubleEndedIterator,
     {
-        let packed_phis = EndoScalar::<G1Config>::pack(phis);
+        let packed_phis = EndoScalar::<C>::pack(phis);
         let hasher = <DefaultFieldHasher<blake3::Hasher> as HashToField<Fq>>::new(&[]);
         hasher.hash_to_field::<1>(&packed_phis.into_bigint().to_bytes_le())[0]
     }
 }
 
-impl<const KAPPA: usize> Circuit<Input, InputMac<KAPPA>, Output, IdentityMac<Output>>
-    for Table<KAPPA>
-{
-    type Aux = Fq;
-
-    fn garble<P: PRG>(
-        _parent_nonce: &mut Nonce,
-        _prg_unseeded: &P::Unseeded,
-        _rng: &mut StdRng,
-        aux: Option<&Self::Aux>,
-        input_mac_key: &InputMacKey<KAPPA>,
-    ) -> (Self, IdentityMacKey) {
+impl<const KAPPA: usize> Table<KAPPA> {
+    pub(crate) fn garble(enc_s: Fq, input_mac_key: &InputMacKey<KAPPA>) -> (Self, IdentityMacKey) {
         let one_mac = input_mac_key.encode(&Fp12::ONE);
-        let secret = aux.unwrap();
-        let enc_s = {
-            let s = Self::derive_secret(input_mac_key.iter().map(|key| key.phi.clone()));
-            s + secret
-        };
 
         (Self { one_mac, enc_s }, IdentityMacKey)
     }
 
-    fn evaluate<P: PRG>(
+    /// This method takes in four InputMac's. Each InputMac is a sequence of
+    /// [EndoMac; KAPPA_B].
+    ///
+    /// For each position `i` in KAPPA_B, we check for a match with the one_mac
+    /// in at least one of the InputMac's.
+    ///
+    /// If none of the InputMac's matches the one_mac at a given `i`, we can
+    /// recover phi_i using one of the InputMac's.
+    pub(crate) fn evaluate(
         &self,
-        _parent_nonce: &mut Nonce,
-        _prg_unseeded: &P::Unseeded,
         input: &Input,
-        input_mac: &InputMac<KAPPA>,
+        input_macs: &[InputMac<KAPPA>],
     ) -> (Output, IdentityMac<Output>) {
-        if *input_mac == self.one_mac {
-            return (Fq::ZERO, IdentityMac(PhantomData));
-        }
+        let phis = EndoScalar::<G1Config>::iter();
+        let input_exp = if *input == Fq12::ONE {
+            vec![Fq12::ONE]
+        } else {
+            // Precompute the powers of input
+            let mut input_exp = vec![Fq12::ZERO; ENDO_SIZE];
 
-        // Precompute the powers of input
-        let mut input_exp = [*input; ENDO_SIZE];
-        input_exp
-            .iter_mut()
-            .enumerate()
-            .for_each(|(exp, input_exp)| {
-                let phi = EndoScalar::<G1Config>::from(exp as i8 - 1);
-                *input_exp = phi.endo_frob(input_exp);
-            });
+            input_exp
+                .iter_mut()
+                .zip(phis.iter())
+                .for_each(|(input_exp, phi)| *input_exp = phi.endo_frob(input));
 
-        // If input_mac is not equal to one_mac, we can recover the `phi`s of
+            input_exp
+        };
+
+        // If none of the input_macs is equal to one_mac, we can recover the `phi`s of
         // the input_mac_key in the following way:
         // - one_mac   = 1 ^ {phi_i} * k_i
         // - input_mac = input ^ {phi_i} * k_i
         // - input_mac / one_mac = input^{phi_i}
-        let mut input_div_one: Vec<_> = self.one_mac.iter().map(|v| **v).collect();
-        batch_inversion(&mut input_div_one);
-        input_div_one
-            .iter_mut()
-            .zip(input_mac.iter())
-            .for_each(|(one_inv, input)| *one_inv *= **input);
+        let mut one_inv: Vec<_> = self.one_mac.iter().map(|v| **v).collect();
+        batch_inversion(&mut one_inv);
+
+        let input_mac_div_one = input_macs
+            .iter()
+            .map(|input_mac| {
+                input_mac
+                    .iter()
+                    .zip(one_inv.iter())
+                    .map(|(mac, one_inv)| **mac * one_inv)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
 
         // For each input^{phi_i}, brute force the `phi`. This is efficient
         // because there are only seven possible values of `phi`.
-        let phis = input_div_one.iter().map(|input| {
-            let endoscalar = input_exp.iter().position(|&x| x == *input).unwrap() as i8;
-            EndoScalar::from(endoscalar - 1)
+        let mut recovered_phis = Vec::with_capacity(KAPPA);
+        (0..KAPPA).for_each(|idx| {
+            let find_position = |val: Fq12| input_exp.iter().position(|&x| x == val);
+            let input_mac_div_one_slice =
+                input_mac_div_one.iter().map(|mac| find_position(mac[idx]));
+            let phi = unwrap_single(input_mac_div_one_slice);
+
+            recovered_phis.push(phi);
         });
 
-        // Recover the secret as the pow_n_lincomb of the phis.
-        let s = self.enc_s - Self::derive_secret(phis);
+        let phis = if recovered_phis.iter().all(Option::is_some) {
+            let recovered_phis: Option<Vec<usize>> = recovered_phis.into_iter().collect();
+            recovered_phis
+                .unwrap()
+                .iter()
+                .map(|&idx| phis[idx].clone())
+                .collect()
+        } else {
+            EndoScalar::<G1Config>::decode(&recovered_phis)
+        };
+
+        if *input == Fq12::ONE && phis.iter().all(|phi| matches!(phi, EndoScalar::Zero(_))) {
+            return (Fq::ZERO, IdentityMac(PhantomData));
+        }
+
+        // Recover the secret using the phis.
+        let s = self.enc_s - Self::hash_packed_phis(phis);
         (s, IdentityMac(PhantomData))
     }
 }
 
 #[test]
-fn test_conditional_reveal() {
+fn test_conditional_reveal_valid() {
     use crate::garble::pairing::KAPPA_B;
-    use aes::Aes128;
-    use ark_std::{UniformRand, rand::SeedableRng};
+    use ark_std::{
+        UniformRand,
+        rand::{SeedableRng, rngs::StdRng},
+    };
 
     const SEED: u64 = 0;
 
-    let unseeded_prg = Aes128::init(&[]);
+    let mut rng = StdRng::seed_from_u64(SEED);
+    let secret = Fq::rand(&mut rng);
+
+    let input = Fq12::ONE;
+    let input_mac_key = InputMacKey::random_key(&mut rng);
+    let input_mac = input_mac_key.encode(&input);
+
+    let enc_s = secret
+        + Table::<KAPPA_B>::hash_packed_phis(input_mac_key.iter().map(|key| key.phi.clone()));
+
+    let table = Table::<KAPPA_B>::garble(enc_s, &input_mac_key).0;
+
+    let output = table.evaluate(&input, &[input_mac]).0;
+
+    assert_eq!(output, Fq::ZERO);
+}
+
+#[test]
+fn test_conditional_reveal_invalid() {
+    use crate::garble::pairing::KAPPA_B;
+    use ark_std::{
+        UniformRand,
+        rand::{SeedableRng, rngs::StdRng},
+    };
+
+    const SEED: u64 = 0;
 
     let mut rng = StdRng::seed_from_u64(SEED);
     let secret = Fq::rand(&mut rng);
@@ -162,18 +207,12 @@ fn test_conditional_reveal() {
     let input_mac_key = InputMacKey::random_key(&mut rng);
     let input_mac = input_mac_key.encode(&input);
 
-    let table = Table::<KAPPA_B>::garble::<Aes128>(
-        &mut Nonce::new(),
-        &unseeded_prg,
-        &mut rng,
-        Some(&secret),
-        &input_mac_key,
-    )
-    .0;
+    let enc_s = secret
+        + Table::<KAPPA_B>::hash_packed_phis(input_mac_key.iter().map(|key| key.phi.clone()));
 
-    let output = table
-        .evaluate::<Aes128>(&mut Nonce::new(), &unseeded_prg, &input, &input_mac)
-        .0;
+    let table = Table::<KAPPA_B>::garble(enc_s, &input_mac_key).0;
+
+    let output = table.evaluate(&input, &[input_mac]).0;
 
     assert_eq!(output, secret);
 }

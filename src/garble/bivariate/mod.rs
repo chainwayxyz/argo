@@ -12,6 +12,25 @@ use crate::{
     utils::bits::{FromBits, NumBits, ToBits},
 };
 
+/// Bivariate quadratic poly in coefficient form
+/// Ordered according to weight:
+/// [constant, x, y, x_sq, xy, y_sq]
+pub(crate) struct Poly<F>(pub(crate) [F; 6]);
+
+impl<F: Field> Poly<F> {
+    pub(crate) fn new(coeffs: [F; 6]) -> Self {
+        Self(coeffs)
+    }
+
+    pub(crate) fn leading_coeff(&self) -> Option<F> {
+        self.0.iter().rev().find(|x| **x != F::ZERO).copied()
+    }
+
+    pub(crate) fn scale(&mut self, scalar: F) {
+        self.0.iter_mut().for_each(|coeff| *coeff *= scalar);
+    }
+}
+
 /// Garbling table for arbitrary bivariate quadratic polynomials
 pub(crate) mod biquadratic;
 /// Garbling table that takes as input the values (x, y), and leaks `secret`
