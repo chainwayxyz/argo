@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 #![allow(non_snake_case)]
-// #![deny(unused)]
+#![deny(unused)]
 
 /// MACs for different primitives
 pub mod mac;

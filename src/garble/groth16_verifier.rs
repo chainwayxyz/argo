@@ -10,7 +10,7 @@ use core::panic;
 use std::marker::PhantomData;
 
 use aes::Aes128;
-use ark_bn254::{Bn254, Fq, Fq2, Fq12, G1Affine, G1Projective, G2Affine, G2Projective, g1, g2};
+use ark_bn254::{Bn254, Fq, Fq2, Fq12, Fr, G1Affine, G1Projective, G2Affine, G2Projective, g1, g2};
 use ark_ec::{AffineRepr, pairing::Pairing};
 use ark_ff::Field;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
@@ -25,9 +25,10 @@ use crate::{
         bivariate::{self, curve_membership},
         conditional_reveal, field_mac_to_ec_mac, g2_subgroup_check,
         pairing::{self, KAPPA_A, KAPPA_B},
+        scalar_mul,
     },
     mac::{
-        IdentityMac, IdentityMacKey, IteratedMac, Mac, MacKey, RandomFromPhi,
+        IdentityMac, IdentityMacKey, IteratedMac, Mac, MacKey, RandomFromPhi, digit,
         endo::{EndoMacKey, EndoMultGroupMac},
     },
     utils::prg::PRG,
@@ -43,18 +44,23 @@ use ark_ff::UniformRand;
 pub struct VerifierKey {
     pub G1: G1Projective,
     pub H1: G2Projective,
+    pub H2: G2Projective,
     pub c: Fq12,
 }
 
 impl VerifierKey {
-    /// Given the input (A, B, C), returns e(A, B) e(C, H_1) * c.
+    /// Given the input (A, B, C), returns e(A, B) e(C, H_1) e([x], H_2) * c.
     /// Recall that if (A, B, C) is a valid Groth16 proof, it should satisfy
-    ///                 e(A, B) e(C, H_1) = c^{-1}.
+    ///                 e(A, B) e(C, H_1) e([x], H_2) = c^{-1}.
     /// In other words, this method should return Fq12::ONE on a valid proof.
     fn pairing(&self, input: &Input) -> Fq12 {
         Bn254::multi_pairing(
-            vec![input.A.into_group(), input.C.into_group()],
-            vec![input.B.into_group(), self.H1],
+            vec![
+                input.A.into_group(),
+                input.C.into_group(),
+                self.G1 * input.x,
+            ],
+            vec![input.B.into_group(), self.H1, self.H2],
         )
         .0 * self.c
     }
@@ -66,6 +72,7 @@ pub struct Input {
     pub A: G1Affine,
     pub B: G2Affine,
     pub C: G1Affine,
+    pub x: Fr,
 }
 
 /// Input MAC key from the Groth16 proof.
@@ -74,6 +81,7 @@ pub struct InputMacKey {
     A: bivariate::InputMacKey<Fq>,
     B: bivariate::InputMacKey<Fq2>,
     C: bivariate::InputMacKey<Fq>,
+    x: digit::group::DigitMacKey<Fr>,
 }
 
 /// Input MAC of the Groth16 proof.
@@ -82,6 +90,7 @@ pub struct InputMac {
     A: bivariate::InputMac<Fq>,
     B: bivariate::InputMac<Fq2>,
     C: bivariate::InputMac<Fq>,
+    x: digit::group::DigitMac<Fr>,
 }
 
 type Output = conditional_reveal::Output;
@@ -92,6 +101,7 @@ impl MacKey<Input, InputMac> for InputMacKey {
             A: self.A.encode(&value.A.into()),
             B: self.B.encode(&value.B.into()),
             C: self.C.encode(&value.C.into()),
+            x: self.x.encode(&value.x),
         }
     }
     #[cfg(test)]
@@ -100,6 +110,7 @@ impl MacKey<Input, InputMac> for InputMacKey {
             A: self.A.decode(&mac.A).into(),
             B: self.B.decode(&mac.B).into(),
             C: self.C.decode(&mac.C).into(),
+            x: self.x.decode(&mac.x),
         }
     }
     fn random_key(rng: &mut StdRng) -> Self {
@@ -107,6 +118,7 @@ impl MacKey<Input, InputMac> for InputMacKey {
             A: bivariate::InputMacKey::random_key(rng),
             B: bivariate::InputMacKey::random_key(rng),
             C: bivariate::InputMacKey::random_key(rng),
+            x: digit::group::DigitMacKey::random_key(rng),
         }
     }
 }
@@ -122,6 +134,7 @@ impl Mac<Input> for InputMac {
             A: G1Affine::rand(rng),
             B: G2Affine::rand(rng),
             C: G1Affine::rand(rng),
+            x: Fr::rand(rng),
         }
     }
 }
@@ -156,6 +169,8 @@ pub fn garble_groth16(
 #[derive(CanonicalSerialize, CanonicalDeserialize)]
 /// This table is structured as a collection of smaller modular tables.
 pub struct Table {
+    // [x]G
+    x_G: scalar_mul::fixed::Table<g1::Config, KAPPA_B>,
     // Maps input MAC of (A.x, A.y) to iterated MAC of A projective coordinates
     a_ec_mac: field_mac_to_ec_mac::Table<g1::Config, KAPPA_A>,
     // Checks that A is a valid G1 curve point, leaking `secret` if not
@@ -295,6 +310,28 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         )
         .0;
 
+        let (x_G, x_G_output_mac_key) = {
+            let input_mac_key = (&input_mac_key.x).into();
+            let c_phis = pairing_output_mac_key
+                .iter()
+                .map(|key| key.phi.clone())
+                .collect::<Vec<_>>();
+            let output_mac_key: [EndoMacKey<g1::Config>; KAPPA_B] =
+                scalar_mul::fixed::Table::output_mac_key_from_phis(
+                    rng,
+                    verifier_key.G1,
+                    &input_mac_key,
+                    &c_phis.try_into().unwrap_or_else(|_| panic!()),
+                );
+            scalar_mul::fixed::Table::garble::<P>(
+                parent_nonce,
+                prg_unseeded,
+                rng,
+                Some(&(verifier_key.G1.into(), output_mac_key)),
+                &input_mac_key,
+            )
+        };
+
         // Garbling table for the pairing e(A, B). It uses a_ec_mac_key,
         // b_ec_mac_key as input MAC keys, and pairing_output_mac_key as the output
         // MAC key.
@@ -302,15 +339,11 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
 
         // Garbling table for the conditional revelation of `secret`.
         let conditional_reveal = {
-            // The input MAC key for e(A, B) e(C, H_1) * c. Recall that if
-            // (A, B, C) is a valid Groth16 proof, it should satisfy
-            //               e(A, B) e(C, H_1) = c^{-1}.
-            // In other words, this should be the input MAC key for the value
-            // Fq12::ONE.
             let input_mac_key = conditional_reveal::Table::groth16_input_mac_key(
                 verifier_key,
                 &pairing_output_mac_key,
                 &c_ec_mac_key,
+                &x_G_output_mac_key,
             );
 
             conditional_reveal::Table::garble(enc_s, &input_mac_key).0
@@ -318,6 +351,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
 
         (
             Self {
+                x_G,
                 a_ec_mac,
                 a_curve_check,
                 b_ec_mac,
@@ -341,10 +375,10 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         input_mac: &InputMac,
     ) -> (Output, IdentityMac<Output>) {
         // The Groth16 verifier key.
-        let VerifierKey { H1, .. } = self.verifier_key;
+        let VerifierKey { H1, H2, .. } = self.verifier_key;
 
         // The Groth16 input (A, B, C).
-        let Input { A, B, C } = *input;
+        let Input { A, B, C, x } = *input;
 
         // Evaluate the curve validity check table for `A`. This evaluates to
         // `secret` if `A` is not a valid curve point.
@@ -409,6 +443,11 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
             .evaluate::<P>(parent_nonce, prg_unseeded, &C.into(), &input_mac.C)
             .1;
 
+        let x_G_mac = self
+            .x_G
+            .evaluate::<P>(parent_nonce, prg_unseeded, &x, &(&input_mac.x).into())
+            .1;
+
         // Compute the pairing e(A,B) e(C, H_1) on the input A, B, C
         let conditional_reveal_input = self.verifier_key.pairing(input);
 
@@ -432,7 +471,10 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
                         (0..KAPPA_B).for_each(|idx| {
                             let AB = &AB_mac[idx];
                             let C = &c_ec_mac[idx];
-                            let mac = (Bn254::multi_pairing(vec![**C], vec![H1]).0 * **AB).into();
+                            let x_G = &x_G_mac[idx];
+                            let mac = (Bn254::multi_pairing(vec![**C, **x_G], vec![H1, H2]).0
+                                * **AB)
+                                .into();
                             conditional_reveal_mac.push(mac);
                         });
                         conditional_reveal_mac
@@ -469,19 +511,20 @@ fn test_valid_snark() {
     let input = InputMac::random_input(&mut rng);
     let G1 = G1Projective::rand(&mut rng);
     let H1 = G2Projective::rand(&mut rng);
+    let H2 = G2Projective::rand(&mut rng);
 
     // Construct `c` for the verifier key s.t. our chosen inputs are valid,
     // i.e. e(A,B) e(C, H_1) = c^{-1}
     let c = Bn254::multi_pairing(
-        vec![input.A.into_group(), input.C.into_group()],
-        vec![input.B.into_group(), H1],
+        vec![input.A.into_group(), input.C.into_group(), G1 * input.x],
+        vec![input.B.into_group(), H1, H2],
     )
     .0
     .inverse()
     .unwrap();
 
     let secret = Fq::rand(&mut rng);
-    let verifier_key = VerifierKey { G1, H1, c };
+    let verifier_key = VerifierKey { G1, H1, H2, c };
 
     let input_mac_key = InputMacKey::random_key(&mut rng);
     let table = Table::garble::<Aes128>(
@@ -521,6 +564,7 @@ fn test_invalid_groth16() {
     let verifier_key = VerifierKey {
         G1: G1Projective::rand(&mut rng),
         H1: G2Projective::rand(&mut rng),
+        H2: G2Projective::rand(&mut rng),
         c: Bn254::pairing(G1Projective::rand(&mut rng), G2Projective::generator()).0,
     };
 
@@ -565,17 +609,18 @@ fn test_malformed_curve_points() {
     let input = InputMac::random_input(&mut rng);
     let G1 = G1Projective::rand(&mut rng);
     let H1 = G2Projective::rand(&mut rng);
+    let H2 = G2Projective::rand(&mut rng);
 
     // e(A,B) e(C, H_1) = c^{-1}
     let c = Bn254::multi_pairing(
-        vec![input.A.into_group(), input.C.into_group()],
-        vec![input.B.into_group(), H1],
+        vec![input.A.into_group(), input.C.into_group(), G1 * input.x],
+        vec![input.B.into_group(), H1, H2],
     )
     .0
     .inverse()
     .unwrap();
 
-    let verifier_key = VerifierKey { G1, H1, c };
+    let verifier_key = VerifierKey { G1, H1, H2, c };
 
     let input_mac_key = InputMacKey::random_key(&mut rng);
 
@@ -687,6 +732,7 @@ fn test_groth16_serde_roundtrip() {
     let verifier_key = VerifierKey {
         G1: G1Projective::rand(&mut rng),
         H1: G2Projective::rand(&mut rng),
+        H2: G2Projective::rand(&mut rng),
         c: Bn254::pairing(G1Projective::rand(&mut rng), G2Projective::generator()).0,
     };
 

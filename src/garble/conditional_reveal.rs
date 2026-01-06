@@ -40,8 +40,9 @@ impl<const KAPPA: usize> Table<KAPPA> {
         verifier_key: &groth16_verifier::VerifierKey,
         pairing_output_mac_key: &[EndoMultGroupMacKey; KAPPA],
         c_ec_mac_key: &[EndoMacKey<G1Config>; KAPPA],
+        x_G_output_mac_key: &[EndoMacKey<G1Config>; KAPPA],
     ) -> InputMacKey<KAPPA> {
-        let groth16_verifier::VerifierKey { H1, c, .. } = *verifier_key;
+        let groth16_verifier::VerifierKey { H1, H2, c, .. } = *verifier_key;
 
         let mut key = Vec::with_capacity(pairing_output_mac_key.len());
 
@@ -49,11 +50,12 @@ impl<const KAPPA: usize> Table<KAPPA> {
         pairing_output_mac_key
             .iter()
             .zip(c_ec_mac_key.iter())
-            .for_each(|(AB, C)| {
+            .zip(x_G_output_mac_key.iter())
+            .for_each(|((AB, C), x_G)| {
                 // All these MAC keys use the same phi
                 let phi = C.phi.clone();
 
-                let k = Bn254::multi_pairing(vec![C.k], vec![H1]).0;
+                let k = Bn254::multi_pairing(vec![C.k, x_G.k], vec![H1, H2]).0;
                 // c^{p^(2phi + 6)} = c^{-p^(2phi)}
                 // This has the effect of multiplying the MAC'd value by c
                 let c_term = phi.endo_frob(&c.inverse().unwrap());

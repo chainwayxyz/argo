@@ -10,6 +10,7 @@ pub(crate) mod field_mac_to_ec_mac;
 pub(crate) mod g2_subgroup_check;
 pub mod groth16_verifier;
 pub(crate) mod pairing;
+pub(crate) mod scalar_mul;
 
 pub trait Circuit<InputValue, InputMac, OutputValue, OutputMac>: Sized
 where

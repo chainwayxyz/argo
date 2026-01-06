@@ -7,7 +7,7 @@ use argo::{
     mac::MacKey,
     utils::PRG,
 };
-use ark_bn254::{Bn254, Fq, G1Affine, G1Projective, G2Affine, G2Projective};
+use ark_bn254::{Bn254, Fq, Fr, G1Affine, G1Projective, G2Affine, G2Projective};
 use ark_ec::{PrimeGroup, pairing::Pairing};
 use ark_ff::UniformRand;
 use ark_std::rand::{SeedableRng, rngs::StdRng};
@@ -22,11 +22,13 @@ fn invalid_snark(c: &mut Criterion) {
         A: G1Affine::rand(&mut rng),
         B: G2Affine::rand(&mut rng),
         C: G1Affine::rand(&mut rng),
+        x: Fr::rand(&mut rng),
     };
 
     let verifier_key = VerifierKey {
         G1: G1Projective::rand(&mut rng),
         H1: G2Projective::rand(&mut rng),
+        H2: G2Projective::rand(&mut rng),
         c: Bn254::pairing(G1Projective::rand(&mut rng), G2Projective::generator()).0,
     };
 

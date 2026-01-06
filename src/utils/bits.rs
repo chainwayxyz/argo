@@ -1,4 +1,4 @@
-use ark_bn254::{Fq, Fq2};
+use ark_bn254::{Fq, Fq2, Fr};
 use ark_ff::{AdditiveGroup, BigInteger, Field, PrimeField};
 use lazy_static::lazy_static;
 use std::ops::{Add, Mul, MulAssign};
@@ -47,6 +47,12 @@ impl FromBits<Fq, Fq> for Fq {
     }
 }
 
+impl FromBits<Fr, Fr> for Fr {
+    fn from_bits<I: DoubleEndedIterator<Item = Fr>>(bits: I) -> Fr {
+        pow_two_lincomb::<_, Fr, Fr>(bits)
+    }
+}
+
 impl FromBits<Fq, Fq2> for Fq2 {
     fn from_bits<I: DoubleEndedIterator<Item = Fq> + ExactSizeIterator>(mut bits: I) -> Fq2 {
         let fp_len = Fq::MODULUS_BIT_SIZE as usize;
@@ -80,6 +86,13 @@ impl NumBits for Fq {
     }
 }
 
+impl NumBits for Fr {
+    #[inline]
+    fn num_bits() -> u32 {
+        Self::MODULUS_BIT_SIZE
+    }
+}
+
 impl NumBits for Fq2 {
     #[inline]
     fn num_bits() -> u32 {
@@ -88,6 +101,15 @@ impl NumBits for Fq2 {
 }
 
 impl ToBits for Fq {
+    #[inline]
+    fn to_bits(&self) -> Vec<bool> {
+        let mut bits = Vec::with_capacity(Self::MODULUS_BIT_SIZE as usize);
+        bits.extend_from_slice(&self.into_bigint().to_bits_le()[..Self::MODULUS_BIT_SIZE as usize]);
+        bits
+    }
+}
+
+impl ToBits for Fr {
     #[inline]
     fn to_bits(&self) -> Vec<bool> {
         let mut bits = Vec::with_capacity(Self::MODULUS_BIT_SIZE as usize);

@@ -1,6 +1,6 @@
 use std::{marker::PhantomData, ops::Neg};
 
-use ark_bn254::{Fq, Fq2};
+use ark_bn254::{Fq, Fq2, Fr};
 use ark_ff::UniformRand;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::{RngCore, rngs::StdRng};
@@ -189,6 +189,12 @@ impl Random for () {
 impl Random for Fq {
     fn random(rng: &mut StdRng) -> Self {
         Fq::rand(rng)
+    }
+}
+
+impl Random for Fr {
+    fn random(rng: &mut StdRng) -> Self {
+        Fr::rand(rng)
     }
 }
 

@@ -1,7 +1,7 @@
 use ark_ff::AdditiveGroup;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::rngs::StdRng;
-use derive_more::From;
+use derive_more::{Deref, From};
 
 use crate::mac::{Mac, MacKey, Random, RandomFromPhi};
 
@@ -11,7 +11,7 @@ pub(crate) struct GroupMacKey<G: AdditiveGroup> {
     pub(crate) k: G,
 }
 
-#[derive(Debug, PartialEq, From)]
+#[derive(Deref, Debug, PartialEq, From)]
 pub(crate) struct GroupMac<G>(G);
 
 impl<G> Mac<G::Scalar> for GroupMac<G>
