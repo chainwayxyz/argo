@@ -81,7 +81,7 @@ where
     fn derive_output_mac_key<P: PRG>(
         &self,
         prg_unseeded: &P::Unseeded,
-        parent_nonce: &mut Nonce,
+        parent_nonce: &Nonce,
         phi: &G,
     ) -> super::group::DigitMacKey<G> {
         let mut group_mac_keys = Vec::with_capacity(self.len());

@@ -2,6 +2,7 @@ use ark_std::rand::rngs::StdRng;
 
 use crate::{mac::Mac, utils::prg::PRG};
 
+pub(crate) mod binary;
 pub(crate) mod bit_adaptor;
 pub(crate) mod bivariate;
 pub(crate) mod conditional_reveal;

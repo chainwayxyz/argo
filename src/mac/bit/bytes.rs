@@ -1,16 +1,16 @@
-use crate::mac::{Mac, MacKey};
+use crate::mac::{Mac, MacKey, RandomFromPhi};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::{RngCore as _, rngs::StdRng};
 use derive_more::{Deref, From};
 
 /// MAC from a bit to a 16-byte word
 #[derive(Debug, Clone, Copy, CanonicalSerialize, CanonicalDeserialize, PartialEq, From, Deref)]
-pub(crate) struct Bit16ByteMac([u8; 16]);
+pub(crate) struct Bit16ByteMac(pub(crate) [u8; 16]);
 
-#[derive(Debug, Clone, Copy, CanonicalSerialize, CanonicalDeserialize)]
+#[derive(Debug, Clone, Copy, CanonicalSerialize, CanonicalDeserialize, PartialEq)]
 pub(crate) struct Bit16ByteMacKey {
-    phi: [u8; 16],
-    k: [u8; 16],
+    pub(crate) phi: [u8; 16],
+    pub(crate) k: [u8; 16],
 }
 
 impl Bit16ByteMacKey {
@@ -62,5 +62,16 @@ impl Mac<bool> for Bit16ByteMac {
     fn random_input(rng: &mut StdRng) -> bool {
         use ark_std::rand::Rng;
         rng.gen_bool(0.5)
+    }
+}
+
+impl RandomFromPhi<bool, Bit16ByteMac> for Bit16ByteMacKey {
+    type Phi = [u8; 16];
+
+    fn random_from_phi(rng: &mut StdRng, phi: &Self::Phi) -> Self {
+        let mut k = [0; 16];
+        rng.fill_bytes(&mut k);
+
+        Self { phi: *phi, k }
     }
 }

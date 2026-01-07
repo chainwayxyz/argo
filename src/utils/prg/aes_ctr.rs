@@ -36,6 +36,7 @@ impl PRG for Aes128 {
 
         #[cfg(test)]
         {
+            // Check that each counter is used only once per seed.
             // We cannot extract the seed from the PRG, so use counter 0 value instead
             let mut block = Block::default();
             self.encrypt_block(&mut block);

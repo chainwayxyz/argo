@@ -1,33 +1,22 @@
-//! Given an `input_mac_key` and a value `phi`, derives an `output_mac_key`.
-//! Maps the MAC of a single bit under input_mac_key to its MAC under the
-//! derived output_mac_key.
-
 use ark_bn254::Fq;
 use ark_ff::{BigInteger, Field, PrimeField};
-use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::rngs::StdRng;
 
 use crate::{
-    garble::{Circuit, Nonce},
+    garble::{
+        Circuit, Nonce,
+        bit_adaptor::{DeriveOutputMacKey, Table},
+    },
     mac::{
-        Encrypt, Mac, MacKey, Random,
+        Encrypt, MacKey, Random,
         bit::{
             bytes::{Bit16ByteMac, Bit16ByteMacKey},
             group::BitGroupMac,
         },
         group::GroupMacKey,
     },
-    utils::prg::{AES_BLOCK_SIZE, PRG},
+    utils::{PRG, prg::AES_BLOCK_SIZE},
 };
-
-#[derive(CanonicalSerialize, CanonicalDeserialize)]
-pub(crate) struct Table<InputMac, OutputMac>(
-    pub(crate) <InputMac as Encrypt<OutputMac>>::Ciphertext,
-)
-where
-    InputMac: Mac<bool> + Encrypt<OutputMac>,
-    OutputMac: Mac<bool>,
-    InputMac::Key: DeriveOutputMacKey<bool, bool, InputMac, OutputMac>;
 
 /// A bit adaptor table mapping from a Bit16ByteMac to a BitGroupMac.
 impl<G> Circuit<bool, Bit16ByteMac, bool, BitGroupMac<G>> for Table<Bit16ByteMac, BitGroupMac<G>>
@@ -50,8 +39,14 @@ where
         // The output_mac_key is derived s.t.
         // - output_mac_key.phi = phi, and
         // - output_mac_key.k = hash(input_mac_key.encode(false)).
-        let output_mac_key =
-            input_mac_key.derive_output_mac_key::<P>(prg_unseeded, &mut nonce, phi);
+        let output_mac_key = <Bit16ByteMacKey as DeriveOutputMacKey<
+            bool,
+            bool,
+            Bit16ByteMac,
+            BitGroupMac<G>,
+        >>::derive_output_mac_key::<P>(
+            &input_mac_key, prg_unseeded, &nonce, phi
+        );
 
         // We encrypt the encoding of output_mac_key.encode(true), using
         // input_mac_key.encode(true) as the key. This ciphertext is stored
@@ -88,44 +83,6 @@ where
         };
 
         (*input, output_mac)
-    }
-}
-
-pub(crate) trait DeriveOutputMacKey<Input, Output, InputMac, OutputMac>
-where
-    InputMac: Mac<Input>,
-    OutputMac: Mac<Output>,
-{
-    type Phi;
-
-    fn derive_output_mac_key<P: PRG>(
-        &self,
-        prg_unseeded: &P::Unseeded,
-        parent_nonce: &mut Nonce,
-        phi: &Self::Phi,
-    ) -> OutputMac::Key;
-}
-
-/// Given an input_mac_key: Bit16ByteMacKey and a group element phi: G,
-/// derive an output_mac_key: GroupMacKey with s.t.
-/// - output_mac_key.phi = phi, and
-/// - output_mac_key.k = hash(input_mac_key.encode(false)).
-impl<G> DeriveOutputMacKey<bool, bool, Bit16ByteMac, BitGroupMac<G>> for Bit16ByteMacKey
-where
-    G: Field<BasePrimeField = Fq> + Random,
-{
-    type Phi = G;
-
-    fn derive_output_mac_key<P: PRG>(
-        &self,
-        prg_unseeded: &P::Unseeded,
-        parent_nonce: &mut Nonce,
-        phi: &G,
-    ) -> GroupMacKey<G> {
-        let mac = self.encode(&false);
-        let k = P::seed(prg_unseeded, &mac).hash_to_field(parent_nonce);
-
-        GroupMacKey { phi: *phi, k }
     }
 }
 
@@ -212,7 +169,10 @@ fn test_bit_field_adaptor<G>(rng: &mut StdRng)
 where
     G: Field<BasePrimeField = Fq> + Random,
 {
-    use crate::utils::prg::aes_ctr::clear_set;
+    use crate::{
+        mac::{Mac, MacKey},
+        utils::prg::aes_ctr::clear_set,
+    };
     use aes::Aes128;
 
     let unseeded_prg = Aes128::init(&[]);

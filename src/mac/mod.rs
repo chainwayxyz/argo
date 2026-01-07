@@ -8,6 +8,7 @@ use derive_more::Deref;
 
 use crate::{garble::Nonce, utils::prg::PRG};
 
+pub(crate) mod binary;
 pub(crate) mod bit;
 pub(crate) mod digit;
 pub(crate) mod endo;
