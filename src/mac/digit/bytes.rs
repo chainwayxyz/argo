@@ -1,6 +1,5 @@
 //! DigitMac of a field element, where each bit is encoded as a Bit16ByteMac.
 
-use ark_bn254::Fq;
 use ark_ff::{AdditiveGroup, Field};
 use ark_std::rand::rngs::StdRng;
 
@@ -15,6 +14,7 @@ use crate::{
     },
     utils::{
         bits::{FromBits, NumBits, ToBits},
+        group::FromLeBytesModOrder,
         prg::PRG,
     },
 };
@@ -73,7 +73,8 @@ where
 impl<G> DeriveOutputMacKey<G::Scalar, G::Scalar, DigitMac<G>, super::group::DigitMac<G>>
     for DigitMacKey<G>
 where
-    G: Field<BasePrimeField = Fq>,
+    G: Field,
+    G::BasePrimeField: FromLeBytesModOrder,
     G::Scalar: ToBits + NumBits + FromBits<G::Scalar, G::Scalar> + Random,
 {
     type Phi = G;

@@ -1,4 +1,3 @@
-use ark_bn254::Fq;
 use ark_ff::{BigInteger, Field, PrimeField};
 use ark_std::rand::rngs::StdRng;
 
@@ -15,13 +14,14 @@ use crate::{
         },
         group::GroupMacKey,
     },
-    utils::{PRG, prg::AES_BLOCK_SIZE},
+    utils::{PRG, group::FromLeBytesModOrder, prg::AES_BLOCK_SIZE},
 };
 
 /// A bit adaptor table mapping from a Bit16ByteMac to a BitGroupMac.
 impl<G> Circuit<bool, Bit16ByteMac, bool, BitGroupMac<G>> for Table<Bit16ByteMac, BitGroupMac<G>>
 where
-    G: Field<BasePrimeField = Fq> + Random,
+    G: Field + Random,
+    G::BasePrimeField: FromLeBytesModOrder,
 {
     type Aux = G;
 
@@ -45,7 +45,7 @@ where
             Bit16ByteMac,
             BitGroupMac<G>,
         >>::derive_output_mac_key::<P>(
-            &input_mac_key, prg_unseeded, &nonce, phi
+            &input_mac_key, prg_unseeded, &mut nonce, phi
         );
 
         // We encrypt the encoding of output_mac_key.encode(true), using
@@ -90,7 +90,8 @@ where
 /// Produces a ciphertext Vec<u8> of the same length as G::NUM_BYTES.
 impl<G> Encrypt<BitGroupMac<G>> for Bit16ByteMac
 where
-    G: Field<BasePrimeField = Fq>,
+    G: Field,
+    G::BasePrimeField: FromLeBytesModOrder,
 {
     type Ciphertext = Vec<u8>;
 
@@ -167,7 +168,8 @@ where
 #[cfg(test)]
 fn test_bit_field_adaptor<G>(rng: &mut StdRng)
 where
-    G: Field<BasePrimeField = Fq> + Random,
+    G: Field + Random,
+    G::BasePrimeField: FromLeBytesModOrder,
 {
     use crate::{
         mac::{Mac, MacKey},

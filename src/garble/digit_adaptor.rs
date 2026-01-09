@@ -15,10 +15,10 @@ use crate::{
     },
     utils::{
         bits::{FromBits, NumBits, ToBits},
+        group::FromLeBytesModOrder,
         prg::PRG,
     },
 };
-use ark_bn254::Fq;
 use ark_ff::Field;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::rngs::StdRng;
@@ -26,7 +26,8 @@ use ark_std::rand::rngs::StdRng;
 #[derive(CanonicalSerialize, CanonicalDeserialize)]
 pub(crate) struct Table<F>(Vec<bit_adaptor::Table<Bit16ByteMac, BitGroupMac<F>>>)
 where
-    F: Field<BasePrimeField = Fq> + NumBits + FromBits<bool, F> + Random;
+    F: Field + NumBits + FromBits<bool, F> + Random,
+    F::BasePrimeField: FromLeBytesModOrder;
 
 pub(crate) type Input<F> = F;
 pub(crate) type InputMac<F> = bytes::DigitMac<F>;
@@ -38,7 +39,8 @@ pub(crate) type OutputMacKey<F> = group::DigitMacKey<F>;
 
 impl<F> Circuit<Input<F>, InputMac<F>, Output<F>, OutputMac<F>> for Table<F>
 where
-    F: Field<BasePrimeField = Fq> + NumBits + ToBits + FromBits<F, F> + FromBits<bool, F> + Random,
+    F: Field + NumBits + ToBits + FromBits<F, F> + FromBits<bool, F> + Random,
+    F::BasePrimeField: FromLeBytesModOrder,
 {
     type Aux = F;
 
@@ -95,7 +97,8 @@ where
 #[cfg(test)]
 fn test_digit_mac_adaptor<F>()
 where
-    F: Field<BasePrimeField = Fq> + NumBits + ToBits + FromBits<F, F> + FromBits<bool, F> + Random,
+    F: Field + NumBits + ToBits + FromBits<F, F> + FromBits<bool, F> + Random,
+    F::BasePrimeField: FromLeBytesModOrder,
 {
     use aes::Aes128;
     use ark_std::rand::SeedableRng;

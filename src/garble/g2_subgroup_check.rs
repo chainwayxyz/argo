@@ -42,7 +42,11 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         aux: Option<&Self::Aux>,
         input_mac_key: &<InputMac as crate::mac::Mac<Input>>::Key,
     ) -> (Self, <IdentityMac<Output> as crate::mac::Mac<Output>>::Key) {
-        let enc_s = aux.unwrap();
+        let secret = *aux.unwrap();
+        let enc_s = secret
+            + conditional_reveal::Table::<KAPPA_B>::hash_packed_phis(
+                input_mac_key.iter().map(|key| key.phi.clone()),
+            );
 
         let r_ks: Vec<_> = input_mac_key
             .iter()
@@ -51,7 +55,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         let r_ks = Projective::<g2::Config>::normalize_batch(&r_ks);
 
         let table = Self {
-            enc_s: *enc_s,
+            enc_s,
             r_ks: r_ks.try_into().unwrap(),
         };
 
@@ -157,16 +161,11 @@ fn test_g2_subgroup_check() {
     let input_mac_key = <[EndoMacKey<g2::Config>; KAPPA_B]>::random_key(&mut rng);
     let input_mac = input_mac_key.encode(&input);
 
-    let enc_s = secret
-        + conditional_reveal::Table::<KAPPA_B>::hash_packed_phis(
-            input_mac_key.iter().map(|key| key.phi.clone()),
-        );
-
     let table = Table::garble::<Aes128>(
         &mut Nonce::new(),
         &unseeded_prg,
         &mut rng,
-        Some(&enc_s),
+        Some(&secret),
         &input_mac_key,
     )
     .0;
@@ -312,16 +311,11 @@ fn test_g2_subgroup_check_decoding_error() {
 
     let input_mac = input_mac_key.encode(&input);
 
-    let enc_s = secret
-        + conditional_reveal::Table::<KAPPA_B>::hash_packed_phis(
-            input_mac_key.iter().map(|key| key.phi.clone()),
-        );
-
     let table = Table::garble::<Aes128>(
         &mut Nonce::new(),
         &unseeded_prg,
         &mut rng,
-        Some(&enc_s),
+        Some(&secret),
         &input_mac_key,
     )
     .0;

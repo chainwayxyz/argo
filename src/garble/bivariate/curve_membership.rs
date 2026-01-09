@@ -4,7 +4,6 @@
 //! on them. This evaluates to 0 when B + x^3 - y^2 = 0 i.e. when (x,y) is a
 //! valid curve point, and `c * s` otherwise, where B + x^3 - y^2 = c != 0.
 
-use ark_bn254::Fq;
 use ark_ec::{AdditiveGroup, short_weierstrass::SWCurveConfig};
 use ark_ff::{Field, Zero};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
@@ -20,6 +19,7 @@ use crate::{
     mac::{IdentityMac, IdentityMacKey, Random},
     utils::{
         bits::{FromBits, NumBits, ToBits},
+        group::FromLeBytesModOrder,
         prg::PRG,
     },
 };
@@ -28,7 +28,8 @@ use crate::{
 pub(crate) struct Table<C>
 where
     C: SWCurveConfig,
-    C::BaseField: Field<BasePrimeField = Fq> + NumBits + FromBits<bool, C::BaseField> + Random,
+    C::BaseField: Field + NumBits + FromBits<bool, C::BaseField> + Random,
+    <C::BaseField as Field>::BasePrimeField: FromLeBytesModOrder,
 {
     // c'0 + c'1 X^3 + c'1 Y^2 + c'2(X)X^2 + c'3(Y)Y + c'4(X)X + c'5(Y) + c'6(X)
     c_primes: [C::BaseField; 3],
@@ -41,7 +42,8 @@ where
 impl<C> Table<C>
 where
     C: SWCurveConfig,
-    C::BaseField: Field<BasePrimeField = Fq> + NumBits + FromBits<bool, C::BaseField> + Random,
+    C::BaseField: Field + NumBits + FromBits<bool, C::BaseField> + Random,
+    <C::BaseField as Field>::BasePrimeField: FromLeBytesModOrder,
 {
     // c'0 + c'1 X^3 + c'2 Y^2 + c'3(X)X^2 + c'4(Y)Y + c'5(X)X + c'6(Y) + c'7(X)
     fn coord(input: &Input<C::BaseField>, c_primes: &[C::BaseField; 8]) -> C::BaseField {
@@ -82,12 +84,13 @@ impl<C>
     for Table<C>
 where
     C: SWCurveConfig,
-    C::BaseField: Field<BasePrimeField = Fq>
+    C::BaseField: Field
         + NumBits
         + ToBits
         + FromBits<C::BaseField, C::BaseField>
         + FromBits<bool, C::BaseField>
         + Random,
+    <C::BaseField as Field>::BasePrimeField: FromLeBytesModOrder,
 {
     // s
     type Aux = C::BaseField;
@@ -282,12 +285,13 @@ where
 fn test_curve_membership<C>(input: Input<C::BaseField>, rng: &mut StdRng)
 where
     C: SWCurveConfig,
-    C::BaseField: Field<BasePrimeField = Fq>
+    C::BaseField: Field
         + NumBits
         + ToBits
         + FromBits<C::BaseField, C::BaseField>
         + FromBits<bool, C::BaseField>
         + Random,
+    <C::BaseField as Field>::BasePrimeField: FromLeBytesModOrder,
 {
     use crate::{mac::MacKey, utils::prg::aes_ctr::clear_set};
     use aes::Aes128;
@@ -326,7 +330,7 @@ where
 #[test]
 fn test_valid_curve_points() {
     use crate::mac::Mac;
-    use ark_bn254::Fq2;
+    use ark_bn254::{Fq, Fq2};
     use ark_std::rand::SeedableRng;
 
     const SEED: u64 = 0;
@@ -342,7 +346,7 @@ fn test_valid_curve_points() {
 
 #[test]
 fn test_invalid_curve_points() {
-    use ark_bn254::Fq2;
+    use ark_bn254::{Fq, Fq2};
     use ark_std::rand::SeedableRng;
 
     const SEED: u64 = 0;

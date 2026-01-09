@@ -5,7 +5,6 @@
 //!
 //! This is generic over inputs in Fq and Fq2.
 
-use ark_bn254::Fq;
 use ark_ec::{AffineRepr, scalar_mul::glv::GLVConfig, short_weierstrass::Affine};
 use ark_ff::{Field, batch_inversion};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
@@ -22,6 +21,7 @@ use crate::{
     },
     utils::{
         bits::{FromBits, NumBits, ToBits},
+        group::FromLeBytesModOrder,
         prg::PRG,
     },
 };
@@ -34,7 +34,8 @@ pub(crate) type OutputMacKey<Config, const KAPPA: usize> = [EndoMacKey<Config>; 
 pub(crate) struct Table<C, const KAPPA: usize>
 where
     C: GLVConfig,
-    C::BaseField: Field<BasePrimeField = Fq> + NumBits + FromBits<bool, C::BaseField> + Random,
+    C::BaseField: Field + NumBits + FromBits<bool, C::BaseField> + Random,
+    <C::BaseField as Field>::BasePrimeField: FromLeBytesModOrder,
 {
     is_full: bool,
     x: Vec<biquadratic::Table<C::BaseField>>,
@@ -47,7 +48,8 @@ impl<Config, F, const KAPPA: usize>
     for Table<Config, KAPPA>
 where
     Config: GLVConfig<BaseField = F> + Clone,
-    F: Field<BasePrimeField = Fq> + NumBits + ToBits + FromBits<F, F> + FromBits<bool, F> + Random,
+    F: Field + NumBits + ToBits + FromBits<F, F> + FromBits<bool, F> + Random,
+    F::BasePrimeField: FromLeBytesModOrder,
     EndoMacKey<Config>: RandomFromPhi<Affine<Config>, EndoMac<Config>>,
 {
     type Aux = (bool, OutputMacKey<Config, KAPPA>);
@@ -290,12 +292,13 @@ where
 fn test_field_mac_to_ec_mac<C>(is_full: bool)
 where
     C: GLVConfig + Clone,
-    C::BaseField: Field<BasePrimeField = Fq>
+    C::BaseField: Field
         + NumBits
         + FromBits<bool, C::BaseField>
         + Random
         + ToBits
         + FromBits<C::BaseField, C::BaseField>,
+    <C::BaseField as Field>::BasePrimeField: FromLeBytesModOrder,
     EndoMacKey<C>: RandomFromPhi<Affine<C>, EndoMac<C>>,
 {
     use crate::{garble::pairing::KAPPA_B, mac::MacKey, utils::prg::aes_ctr::clear_set};

@@ -1,11 +1,10 @@
 //! Pseudo-random generator used in the bit_adaptor table.
 //! This implementation is tailored for AES128.
 
-use ark_bn254::Fq;
 use ark_ec::AdditiveGroup;
 use ark_ff::{Field, PrimeField};
 
-use crate::{garble::Nonce, utils::group::from_le_bytes_mod_order};
+use crate::{garble::Nonce, utils::group::FromLeBytesModOrder};
 
 pub(crate) mod aes_ctr;
 
@@ -26,7 +25,8 @@ pub trait PRG: Clone {
 
     fn hash_to_field<F>(&self, parent_nonce: &Nonce) -> F
     where
-        F: Field<BasePrimeField = Fq>,
+        F: Field,
+        F::BasePrimeField: FromLeBytesModOrder,
     {
         let parent_nonce = &mut parent_nonce.clone();
 
@@ -49,7 +49,7 @@ pub trait PRG: Clone {
                 bytes.extend_from_slice(&block);
             });
 
-            *elem = from_le_bytes_mod_order(&bytes);
+            *elem = <F::BasePrimeField as FromLeBytesModOrder>::from_le_bytes_mod_order(&bytes);
         });
 
         F::from_base_prime_field_elems(base_prime_field_elems).unwrap()

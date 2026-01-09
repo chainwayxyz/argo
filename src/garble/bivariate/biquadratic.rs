@@ -1,7 +1,6 @@
 //! Garbling table for the oblivious evaluation of a quadratic equation in
 //! two variables.
 
-use ark_bn254::Fq;
 use ark_ff::Field;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::rngs::StdRng;
@@ -13,10 +12,10 @@ use crate::{
         bivariate::{Input, InputMac, InputMacKey},
         digit_adaptor,
     },
-    mac::Random,
-    mac::{IdentityMac, IdentityMacKey},
+    mac::{IdentityMac, IdentityMacKey, Random},
     utils::{
         bits::{FromBits, NumBits, ToBits},
+        group::FromLeBytesModOrder,
         prg::PRG,
     },
 };
@@ -24,7 +23,8 @@ use crate::{
 #[derive(CanonicalSerialize, CanonicalDeserialize)]
 pub(crate) struct Table<F>
 where
-    F: Field<BasePrimeField = Fq> + NumBits + FromBits<bool, F> + Random,
+    F: Field + NumBits + FromBits<bool, F> + Random,
+    F::BasePrimeField: FromLeBytesModOrder,
 {
     c_primes: [Option<F>; 6],
     // Same x input to both adaptors
@@ -37,7 +37,8 @@ where
 
 impl<F> Table<F>
 where
-    F: Field<BasePrimeField = Fq> + NumBits + FromBits<bool, F> + Random,
+    F: Field + NumBits + FromBits<bool, F> + Random,
+    F::BasePrimeField: FromLeBytesModOrder,
 {
     pub(crate) fn c_prime_indices(cs: &[bool; 6]) -> BTreeSet<usize> {
         //   c'0 + c'1 X + c'2 Y + c'3 X^2 + c'4 XY + c'5 Y^2 + c'6(Y) X
@@ -128,7 +129,8 @@ where
 
 impl<F> Circuit<Input<F>, InputMac<F>, F, IdentityMac<F>> for Table<F>
 where
-    F: Field<BasePrimeField = Fq> + NumBits + ToBits + FromBits<F, F> + FromBits<bool, F> + Random,
+    F: Field + NumBits + ToBits + FromBits<F, F> + FromBits<bool, F> + Random,
+    F::BasePrimeField: FromLeBytesModOrder,
 {
     // c_i's
     type Aux = ([F; 6], [bool; 6]);
@@ -356,7 +358,8 @@ where
 #[cfg(test)]
 fn test_random_biquadratic<F>()
 where
-    F: Field<BasePrimeField = Fq> + NumBits + FromBits<bool, F> + FromBits<F, F> + ToBits + Random,
+    F: Field + NumBits + FromBits<bool, F> + FromBits<F, F> + ToBits + Random,
+    F::BasePrimeField: FromLeBytesModOrder,
 {
     use ark_std::rand::SeedableRng;
 

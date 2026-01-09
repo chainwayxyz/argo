@@ -1,29 +1,24 @@
 //! Garbling table for a Groth16 verifier that commits to a secret `s`.
 //! This table reveals `s` if it is evaluated on:
-//! - (A, B, C) that does not satisfy e(A, B) e(C, H_1) = c^{-1}, where
-//!   H_1, c are from the verifier key;
-//! - (A, B, C) where any of the points is an invalid curve point.
-//!
-//! This implementation does not support Groth16 public inputs.
+//! - (A, B, C) that does not satisfy e(A, B) e(C, H_1) e([x], H_2) = c^{-1},
+//! where H_1, c are from the verifier key;
+//! - (A, B, C) where any of the points is an invalid curve point;
+//! - (A, B, C) where any of the (x, y) coordinates is larger than |Fq|;
+//! - `x`` where `x` is larger than |Fr|.
+
+pub(crate) mod input_validity;
 
 use core::panic;
-use std::marker::PhantomData;
 
 use aes::Aes128;
 use ark_bn254::{Bn254, Fq, Fq2, Fq12, Fr, G1Affine, G1Projective, G2Affine, G2Projective, g1, g2};
 use ark_ec::{AffineRepr, pairing::Pairing};
-use ark_ff::Field;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use ark_std::{
-    Zero,
-    rand::{SeedableRng, rngs::StdRng},
-};
+use ark_std::rand::{SeedableRng, rngs::StdRng};
 
 use crate::{
     garble::{
-        Circuit, Nonce,
-        bivariate::{self, curve_membership},
-        conditional_reveal, field_mac_to_ec_mac, g2_subgroup_check,
+        Circuit, Nonce, bivariate, conditional_reveal, field_mac_to_ec_mac,
         pairing::{self, KAPPA_A, KAPPA_B},
         scalar_mul,
     },
@@ -66,7 +61,7 @@ impl VerifierKey {
     }
 }
 
-/// Groth16 proof. This implementation does not support Groth16 public inputs.
+/// Groth16 proof.
 #[derive(Debug, Clone, Copy)]
 pub struct Input {
     pub A: G1Affine,
@@ -81,7 +76,7 @@ pub struct InputMacKey {
     A: bivariate::InputMacKey<Fq>,
     B: bivariate::InputMacKey<Fq2>,
     C: bivariate::InputMacKey<Fq>,
-    x: digit::group::DigitMacKey<Fr>,
+    x: digit::bytes::DigitMacKey<Fr>,
 }
 
 /// Input MAC of the Groth16 proof.
@@ -90,7 +85,7 @@ pub struct InputMac {
     A: bivariate::InputMac<Fq>,
     B: bivariate::InputMac<Fq2>,
     C: bivariate::InputMac<Fq>,
-    x: digit::group::DigitMac<Fr>,
+    x: digit::bytes::DigitMac<Fr>,
 }
 
 type Output = conditional_reveal::Output;
@@ -118,7 +113,7 @@ impl MacKey<Input, InputMac> for InputMacKey {
             A: bivariate::InputMacKey::random_key(rng),
             B: bivariate::InputMacKey::random_key(rng),
             C: bivariate::InputMacKey::random_key(rng),
-            x: digit::group::DigitMacKey::random_key(rng),
+            x: digit::bytes::DigitMacKey::random_key(rng),
         }
     }
 }
@@ -169,22 +164,16 @@ pub fn garble_groth16(
 #[derive(CanonicalSerialize, CanonicalDeserialize)]
 /// This table is structured as a collection of smaller modular tables.
 pub struct Table {
+    // Check that the input is well-formed
+    input_validity: input_validity::Table,
     // [x]G
     x_G: scalar_mul::fixed::Table<g1::Config, KAPPA_B>,
     // Maps input MAC of (A.x, A.y) to iterated MAC of A projective coordinates
     a_ec_mac: field_mac_to_ec_mac::Table<g1::Config, KAPPA_A>,
-    // Checks that A is a valid G1 curve point, leaking `secret` if not
-    a_curve_check: curve_membership::Table<g1::Config>,
     // Maps input MAC of (B.x, B.y) to iterated MAC of B projective coordinates
     b_ec_mac: field_mac_to_ec_mac::Table<g2::Config, KAPPA_B>,
-    // Checks that B is a valid curve point, leaking `secret` if not
-    b_curve_check: curve_membership::Table<g2::Config>,
-    // Checks that B is in G2, leaking `secret` if not
-    b_g2_check: g2_subgroup_check::Table,
     // Maps input MAC of (C.x, C.y) to iterated MAC of C projective coordinates
     c_ec_mac: field_mac_to_ec_mac::Table<g1::Config, KAPPA_B>,
-    // Checks that C is a valid G1 curve point, leaking `secret` if not
-    c_curve_check: curve_membership::Table<g1::Config>,
     // e(A,B)
     pairing: pairing::Table,
     // Leaks secret if evaluated on an input != 1 and its MAC
@@ -219,51 +208,6 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
             );
             hash_packed_phis + secret
         };
-
-        // Garbling table to check that `A` is a valid G1 curve point.
-        // This table leaks `secret` if `A` is not a valid curve point.
-        let a_curve_check = curve_membership::Table::garble::<P>(
-            parent_nonce,
-            prg_unseeded,
-            rng,
-            Some(secret),
-            // Input MAC key for the (x, y) coordinates of `A`
-            &input_mac_key.A,
-        )
-        .0;
-
-        // Garbling table to check that `B` is a valid G2 curve point.
-        // This table leaks `secret` if `B` is not a valid curve point.
-        let b_curve_check = curve_membership::Table::garble::<P>(
-            parent_nonce,
-            prg_unseeded,
-            rng,
-            Some(&Fq2::from_base_prime_field(*secret)),
-            // Input MAC key for the (x, y) coordinates of `B`
-            &input_mac_key.B,
-        )
-        .0;
-
-        let b_g2_check = g2_subgroup_check::Table::garble::<P>(
-            parent_nonce,
-            prg_unseeded,
-            rng,
-            Some(&enc_s),
-            &b_ec_mac_key,
-        )
-        .0;
-
-        // Garbling table to check that `C`` is a valid G1 curve point.
-        // This table leaks `secret` if `C`` is not a valid curve point.
-        let c_curve_check = curve_membership::Table::garble::<P>(
-            parent_nonce,
-            prg_unseeded,
-            rng,
-            Some(secret),
-            // Input MAC key for the (x, y) coordinates of `C`
-            &input_mac_key.C,
-        )
-        .0;
 
         // Construct c_ec_mac_key to use the same `phi`s as pairing_output_mac_key.
         // c_ec_mac_key is used as the output key for field_to_ec_mac of `C`
@@ -311,26 +255,32 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         .0;
 
         let (x_G, x_G_output_mac_key) = {
-            let input_mac_key = (&input_mac_key.x).into();
+            let input_mac_key = &input_mac_key.x;
             let c_phis = pairing_output_mac_key
                 .iter()
                 .map(|key| key.phi.clone())
                 .collect::<Vec<_>>();
-            let output_mac_key: [EndoMacKey<g1::Config>; KAPPA_B] =
-                scalar_mul::fixed::Table::output_mac_key_from_phis(
-                    rng,
-                    verifier_key.G1,
-                    &input_mac_key,
-                    &c_phis.try_into().unwrap_or_else(|_| panic!()),
-                );
             scalar_mul::fixed::Table::garble::<P>(
                 parent_nonce,
                 prg_unseeded,
                 rng,
-                Some(&(verifier_key.G1.into(), output_mac_key)),
+                Some(&(
+                    verifier_key.G1.into(),
+                    c_phis.try_into().unwrap_or_else(|_| panic!()),
+                )),
                 &input_mac_key,
             )
         };
+
+        let input_validity = input_validity::Table::garble::<P>(
+            parent_nonce,
+            prg_unseeded,
+            rng,
+            secret,
+            input_mac_key,
+            &b_ec_mac_key,
+        )
+        .0;
 
         // Garbling table for the pairing e(A, B). It uses a_ec_mac_key,
         // b_ec_mac_key as input MAC keys, and pairing_output_mac_key as the output
@@ -351,14 +301,11 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
 
         (
             Self {
+                input_validity,
                 x_G,
                 a_ec_mac,
-                a_curve_check,
                 b_ec_mac,
-                b_curve_check,
-                b_g2_check,
                 c_ec_mac,
-                c_curve_check,
                 pairing,
                 conditional_reveal,
                 verifier_key: *verifier_key,
@@ -380,42 +327,6 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         // The Groth16 input (A, B, C).
         let Input { A, B, C, x } = *input;
 
-        // Evaluate the curve validity check table for `A`. This evaluates to
-        // `secret` if `A` is not a valid curve point.
-        let a_curve_check = self
-            .a_curve_check
-            .evaluate::<P>(parent_nonce, prg_unseeded, &A.into(), &input_mac.A)
-            .0;
-        // If `A` is not a valid curve point, return `secret` early
-        if !a_curve_check.is_zero() {
-            return (a_curve_check, IdentityMac(PhantomData));
-        }
-
-        // Evaluate the curve validity check table for `B`. This evaluates to
-        // `secret` if `B` is not a valid curve point.
-        let b_curve_check = self
-            .b_curve_check
-            .evaluate::<P>(parent_nonce, prg_unseeded, &B.into(), &input_mac.B)
-            .0;
-        // If `B` is not a valid curve point, return `secret` early
-        if !b_curve_check.is_zero() {
-            return (
-                b_curve_check.to_base_prime_field_elements().next().unwrap(),
-                IdentityMac(PhantomData),
-            );
-        }
-
-        // Evaluate the curve validity check table for `C`. This evaluates to
-        // `secret` if `C` is not a valid curve point.
-        let c_curve_check = self
-            .c_curve_check
-            .evaluate::<P>(parent_nonce, prg_unseeded, &C.into(), &input_mac.C)
-            .0;
-        // If `C` is not a valid curve point, return `secret` early
-        if !c_curve_check.is_zero() {
-            return (c_curve_check, IdentityMac(PhantomData));
-        }
-
         // Evaluate the field_to_ec_mac table for `A`.
         let a_ec_mac = self
             .a_ec_mac
@@ -428,15 +339,6 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
             .evaluate::<P>(parent_nonce, prg_unseeded, &B.into(), &input_mac.B)
             .1;
 
-        let b_g2_check = self
-            .b_g2_check
-            .evaluate::<P>(parent_nonce, prg_unseeded, &B, &b_ec_mac)
-            .0;
-
-        if !b_g2_check.is_zero() {
-            return (b_g2_check, IdentityMac(PhantomData));
-        }
-
         // Evaluate the field_to_ec_mac table for `C`.
         let c_ec_mac = self
             .c_ec_mac
@@ -445,8 +347,11 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
 
         let x_G_mac = self
             .x_G
-            .evaluate::<P>(parent_nonce, prg_unseeded, &x, &(&input_mac.x).into())
+            .evaluate::<P>(parent_nonce, prg_unseeded, &x, &input_mac.x)
             .1;
+
+        self.input_validity
+            .evaluate::<P>(parent_nonce, prg_unseeded, input, input_mac, &b_ec_mac);
 
         // Compute the pairing e(A,B) e(C, H_1) on the input A, B, C
         let conditional_reveal_input = self.verifier_key.pairing(input);
@@ -498,7 +403,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
 #[test]
 /// Evaluating the circuit on a valid SNARK and its MAC should return Fq::ZERO,
 /// i.e. it should not reveal the `secret`.
-fn test_valid_snark() {
+fn test_valid_groth16() {
     use ark_ff::AdditiveGroup;
     use ark_ff::Field;
 
@@ -588,123 +493,6 @@ fn test_invalid_groth16() {
     clear_set();
 
     assert_eq!(output, secret);
-}
-
-#[test]
-/// If any of the input (A, B, C) is an invalid curve point, the circuit should
-/// leak the same `secret` as in the case where (A, B, C) are a well-formed but
-/// invalid Groth16 input.
-fn test_malformed_curve_points() {
-    use crate::garble::g2_subgroup_check::get_curve_point_not_in_g2;
-
-    const SEED: u64 = 0;
-
-    let unseeded_prg = Aes128::init(&[]);
-
-    let mut rng = StdRng::seed_from_u64(SEED);
-    let secret = Fq::rand(&mut rng);
-
-    // Evaluate the same circuit on differently malformed inputs, check that
-    // we recover the same secret
-    let input = InputMac::random_input(&mut rng);
-    let G1 = G1Projective::rand(&mut rng);
-    let H1 = G2Projective::rand(&mut rng);
-    let H2 = G2Projective::rand(&mut rng);
-
-    // e(A,B) e(C, H_1) = c^{-1}
-    let c = Bn254::multi_pairing(
-        vec![input.A.into_group(), input.C.into_group(), G1 * input.x],
-        vec![input.B.into_group(), H1, H2],
-    )
-    .0
-    .inverse()
-    .unwrap();
-
-    let verifier_key = VerifierKey { G1, H1, H2, c };
-
-    let input_mac_key = InputMacKey::random_key(&mut rng);
-
-    let table = Table::garble::<Aes128>(
-        &mut Nonce::new(),
-        &unseeded_prg,
-        &mut rng,
-        Some(&(secret, verifier_key)),
-        &input_mac_key,
-    )
-    .0;
-    clear_set();
-
-    // Malformed A
-    let malformed_a = {
-        let invalid_A = G1Affine::new_unchecked(Fq::rand(&mut rng), Fq::rand(&mut rng));
-        let mut input = input;
-        input.A = invalid_A;
-        let input_mac = input_mac_key.encode(&input);
-
-        table
-            .evaluate::<Aes128>(&mut Nonce::new(), &unseeded_prg, &input, &input_mac)
-            .0
-    };
-    clear_set();
-
-    // Invalid curve point B
-    let invalid_curve_point_b = {
-        let invalid_B = G2Affine::new_unchecked(Fq2::rand(&mut rng), Fq2::rand(&mut rng));
-        let mut input = input;
-        input.B = invalid_B;
-        let input_mac = input_mac_key.encode(&input);
-
-        table
-            .evaluate::<Aes128>(&mut Nonce::new(), &unseeded_prg, &input, &input_mac)
-            .0
-    };
-    clear_set();
-
-    // Valid curve point B but not in G2 subgroup
-    let valid_b_not_in_g2 = {
-        let invalid_B = get_curve_point_not_in_g2(&mut rng);
-        let mut input = input;
-        input.B = invalid_B;
-        let input_mac = input_mac_key.encode(&input);
-
-        table
-            .evaluate::<Aes128>(&mut Nonce::new(), &unseeded_prg, &input, &input_mac)
-            .0
-    };
-    clear_set();
-
-    assert_eq!(invalid_curve_point_b, valid_b_not_in_g2);
-    let malformed_b = invalid_curve_point_b;
-
-    // Malformed C
-    let malformed_c = {
-        let invalid_C = G1Affine::new_unchecked(Fq::rand(&mut rng), Fq::rand(&mut rng));
-        let mut input = input;
-        input.C = invalid_C;
-        let input_mac = input_mac_key.encode(&input);
-
-        table
-            .evaluate::<Aes128>(&mut Nonce::new(), &unseeded_prg, &input, &input_mac)
-            .0
-    };
-    clear_set();
-
-    // Well-formed points but invalid proof
-    let well_formed_invalid = {
-        let input = InputMac::random_input(&mut rng);
-
-        let input_mac = input_mac_key.encode(&input);
-
-        table
-            .evaluate::<Aes128>(&mut Nonce::new(), &unseeded_prg, &input, &input_mac)
-            .0
-    };
-    clear_set();
-
-    assert!(!malformed_a.is_zero());
-    assert_eq!(malformed_a, malformed_b);
-    assert_eq!(malformed_b, malformed_c);
-    assert_eq!(malformed_c, well_formed_invalid);
 }
 
 #[test]

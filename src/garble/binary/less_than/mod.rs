@@ -22,6 +22,7 @@ use std::marker::PhantomData;
 
 use ark_bn254::Fq;
 use ark_ff::{BigInteger, PrimeField};
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::RngCore;
 
 #[cfg(test)]
@@ -34,6 +35,7 @@ use crate::{
     mac::{
         IdentityMac, IdentityMacKey, MacKey, Random, RandomFromPhi,
         bit::bytes::{Bit16ByteMac, Bit16ByteMacKey},
+        digit::bytes::{DigitMac, DigitMacKey},
     },
     utils::{
         PRG,
@@ -43,6 +45,7 @@ use crate::{
 
 pub(crate) mod gate;
 
+#[derive(Debug, CanonicalSerialize, CanonicalDeserialize)]
 pub(crate) struct Table<F>
 where
     F: PrimeField + FromBits<F, F> + Random + ToBits + NumBits,
@@ -55,17 +58,20 @@ where
     _marker: PhantomData<F>,
 }
 
-impl<F> Table<F>
+impl<F> Circuit<F, DigitMac<F>, Fq, IdentityMac<Fq>> for Table<F>
 where
     F: PrimeField + FromBits<F, F> + Random + ToBits + NumBits,
 {
+    type Aux = Fq;
+
     fn garble<P: PRG>(
         parent_nonce: &mut crate::garble::Nonce,
         prg_unseeded: &P::Unseeded,
         rng: &mut ark_std::rand::prelude::StdRng,
         aux: Option<&Fq>,
-        input_mac_key: &[Bit16ByteMacKey],
+        input_mac_key: &DigitMacKey<F>,
     ) -> (Self, IdentityMacKey) {
+        let mut nonce = parent_nonce.fork();
         let secret = aux.unwrap();
 
         let mut phi = [0; 16];
@@ -81,7 +87,7 @@ where
                 .iter()
                 .map(|input_mac_key| {
                     bit_adaptor::Table::garble::<P>(
-                        parent_nonce,
+                        &mut nonce,
                         prg_unseeded,
                         rng,
                         Some(&phi),
@@ -106,7 +112,7 @@ where
                 };
 
                 let (gate, mac_key) =
-                    gate::Table::garble::<P>(parent_nonce, prg_unseeded, rng, None, &input_mac_key);
+                    gate::Table::garble::<P>(&mut nonce, prg_unseeded, rng, None, &input_mac_key);
 
                 output_mac_key = mac_key;
 
@@ -116,7 +122,7 @@ where
         let enc_s = {
             let mac_false = output_mac_key.encode(&false);
             let xof = P::seed(prg_unseeded, &*mac_false);
-            let pad: Fq = xof.hash_to_field(parent_nonce);
+            let pad: Fq = xof.hash_to_field(&mut nonce);
 
             *secret + pad
         };
@@ -137,10 +143,13 @@ where
         &self,
         parent_nonce: &mut crate::garble::Nonce,
         prg_unseeded: &P::Unseeded,
-        input_bits: &[bool],
-        input_mac: &[Bit16ByteMac],
+        input: &F,
+        input_mac: &DigitMac<F>,
     ) -> (Fq, IdentityMac<Fq>) {
+        let mut nonce = parent_nonce.fork();
+
         let p_bits = F::MODULUS.to_bits_le();
+        let input_bits = input.to_bits();
 
         let mut x_mac = Vec::with_capacity(input_bits.len());
         self.adaptors
@@ -148,7 +157,7 @@ where
             .zip(input_bits.iter())
             .zip(input_mac.iter())
             .for_each(|((adaptor, input), input_mac)| {
-                let mac = adaptor.evaluate::<P>(parent_nonce, prg_unseeded, input, input_mac);
+                let mac = adaptor.evaluate::<P>(&mut nonce, prg_unseeded, input, input_mac);
                 x_mac.push(mac);
             });
 
@@ -172,7 +181,7 @@ where
                 };
 
                 let (res, res_mac) =
-                    gate.evaluate::<P>(parent_nonce, prg_unseeded, &input, &input_mac);
+                    gate.evaluate::<P>(&mut nonce, prg_unseeded, &input, &input_mac);
 
                 output = res;
                 output_mac = res_mac;
@@ -180,7 +189,7 @@ where
 
         let secret = {
             let xof = P::seed(prg_unseeded, &*output_mac);
-            let pad: Fq = xof.hash_to_field(parent_nonce);
+            let pad: Fq = xof.hash_to_field(&mut nonce);
             self.enc_s - pad
         };
 
@@ -189,7 +198,7 @@ where
 }
 
 #[cfg(test)]
-fn less_than<F>(secret: Fq, input: &[bool]) -> Fq
+fn less_than<F>(secret: Fq, input: &F) -> Fq
 where
     F: PrimeField + FromBits<F, F> + Random + ToBits + NumBits,
 {
@@ -204,11 +213,7 @@ where
     let prg_unseeded = Aes128::init(&[]);
 
     let input_mac_key = DigitMacKey::<F, Bit16ByteMac>::random_key(&mut rng);
-    let input_mac: Vec<_> = input_mac_key
-        .iter()
-        .zip(input.iter())
-        .map(|(mac_key, input)| mac_key.encode(&input))
-        .collect();
+    let input_mac = input_mac_key.encode(input);
 
     let table = Table::<F>::garble::<Aes128>(
         &mut Nonce::new(),
@@ -242,23 +247,22 @@ where
     let input = F::random(&mut rng);
     let secret = Fq::random(&mut rng);
 
-    let output = less_than::<F>(secret, &input.to_bits());
+    let output = less_than::<F>(secret, &input);
     assert_ne!(output, secret);
 }
 
 #[cfg(test)]
 /// We should recover the secret from an invalid field element.
-fn invalid_less_than<F>()
+fn invalid_less_than<F>(input: &F)
 where
     F: PrimeField + FromBits<F, F> + Random + ToBits + NumBits,
 {
     const SEED: u64 = 0;
     let mut rng = StdRng::seed_from_u64(SEED);
 
-    let input = F::MODULUS.to_bits_le();
     let secret = Fq::random(&mut rng);
 
-    let output = less_than::<F>(secret, &input);
+    let output = less_than::<F>(secret, input);
     assert_eq!(output, secret);
 }
 
@@ -270,6 +274,6 @@ fn test_valid() {
 
 #[test]
 fn test_invalid() {
-    invalid_less_than::<Fr>();
-    invalid_less_than::<Fq>();
+    invalid_less_than::<Fr>(&Fr::new_unchecked(Fr::MODULUS));
+    invalid_less_than::<Fq>(&Fq::new_unchecked(Fq::MODULUS));
 }

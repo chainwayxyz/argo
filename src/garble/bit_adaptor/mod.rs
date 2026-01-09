@@ -7,7 +7,6 @@ pub(crate) mod group;
 
 use std::fmt::Debug;
 
-use ark_bn254::Fq;
 use ark_ff::Field;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 
@@ -21,7 +20,7 @@ use crate::{
         },
         group::GroupMacKey,
     },
-    utils::prg::PRG,
+    utils::{group::FromLeBytesModOrder, prg::PRG},
 };
 
 #[derive(CanonicalSerialize, CanonicalDeserialize, Debug)]
@@ -55,7 +54,8 @@ where
 /// - output_mac_key.k = hash(input_mac_key.encode(false)).
 impl<G> DeriveOutputMacKey<bool, bool, Bit16ByteMac, BitGroupMac<G>> for Bit16ByteMacKey
 where
-    G: Field<BasePrimeField = Fq> + Random,
+    G: Field + Random,
+    G::BasePrimeField: FromLeBytesModOrder,
 {
     type Phi = G;
 

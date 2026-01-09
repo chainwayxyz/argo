@@ -1,0 +1,486 @@
+use std::marker::PhantomData;
+
+use ark_bn254::{Fq, Fq2, Fr, G2Affine, g1, g2};
+use ark_ff::{AdditiveGroup, Field};
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+use ark_std::Zero;
+
+use crate::{
+    garble::{
+        Circuit,
+        binary::less_than,
+        bivariate::curve_membership,
+        g2_subgroup_check,
+        groth16_verifier::{Input, InputMac},
+        pairing::KAPPA_B,
+    },
+    mac::{
+        IdentityMac, IdentityMacKey, IteratedMac,
+        endo::{EndoMac, EndoMacKey},
+    },
+    utils::{bits::NumBits, group::is_valid},
+};
+
+#[derive(CanonicalSerialize, CanonicalDeserialize)]
+pub struct Table {
+    // Checks that `x` is a valid Fr element
+    x_range_check: less_than::Table<Fr>,
+    // Checks that `A.x`, `A.y` are valid Fq elements
+    a_range_check: [less_than::Table<Fq>; 2],
+    // Checks that A is a valid G1 curve point, leaking `secret` if not
+    a_curve_check: curve_membership::Table<g1::Config>,
+    // Checks that `B.x`, `B.y` are valid Fq2 elements
+    b_range_check: [less_than::Table<Fq>; 4],
+    // Checks that B is a valid curve point, leaking `secret` if not
+    b_curve_check: curve_membership::Table<g2::Config>,
+    // Checks that B is in G2, leaking `secret` if not
+    b_g2_check: g2_subgroup_check::Table,
+    // Checks that `C.x`, `C.y` are valid Fq elements
+    c_range_check: [less_than::Table<Fq>; 2],
+    // Checks that C is a valid G1 curve point, leaking `secret` if not
+    c_curve_check: curve_membership::Table<g1::Config>,
+}
+
+impl Table {
+    pub(crate) fn garble<P: crate::utils::PRG>(
+        parent_nonce: &mut crate::garble::Nonce,
+        prg_unseeded: &P::Unseeded,
+        rng: &mut ark_std::rand::prelude::StdRng,
+        secret: &Fq,
+        input_mac_key: &<InputMac as crate::mac::Mac<Input>>::Key,
+        b_ec_mac_key: &[EndoMacKey<g2::Config>; KAPPA_B],
+    ) -> (Self, <IdentityMac<Fq> as crate::mac::Mac<Fq>>::Key) {
+        let a_range_check = [&input_mac_key.A.x, &input_mac_key.A.y]
+            .iter()
+            .map(|input_mac_key| {
+                less_than::Table::<Fq>::garble::<P>(
+                    parent_nonce,
+                    prg_unseeded,
+                    rng,
+                    Some(secret),
+                    input_mac_key,
+                )
+                .0
+            })
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+
+        // Garbling table to check that `A` is a valid G1 curve point.
+        // This table leaks `secret` if `A` is not a valid curve point.
+        let a_curve_check = curve_membership::Table::garble::<P>(
+            parent_nonce,
+            prg_unseeded,
+            rng,
+            Some(secret),
+            // Input MAC key for the (x, y) coordinates of `A`
+            &input_mac_key.A,
+        )
+        .0;
+
+        let b_range_check = {
+            let x0_bits = input_mac_key.B.x[..Fq::num_bits() as usize].to_vec().into();
+            let x1_bits = input_mac_key.B.x[Fq::num_bits() as usize..].to_vec().into();
+
+            let y0_bits = input_mac_key.B.y[..Fq::num_bits() as usize].to_vec().into();
+            let y1_bits = input_mac_key.B.y[Fq::num_bits() as usize..].to_vec().into();
+
+            [x0_bits, x1_bits, y0_bits, y1_bits]
+                .iter()
+                .map(|input_mac_key| {
+                    less_than::Table::<Fq>::garble::<P>(
+                        parent_nonce,
+                        prg_unseeded,
+                        rng,
+                        Some(secret),
+                        &input_mac_key,
+                    )
+                    .0
+                })
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap()
+        };
+
+        // Garbling table to check that `B` is a valid curve point.
+        // This table leaks `secret` if `B` is not a valid curve point.
+        let b_curve_check = curve_membership::Table::garble::<P>(
+            parent_nonce,
+            prg_unseeded,
+            rng,
+            Some(&Fq2::from_base_prime_field(*secret)),
+            // Input MAC key for the (x, y) coordinates of `B`
+            &input_mac_key.B,
+        )
+        .0;
+
+        // Garbling table to check that `B` is in the G2 subgroup.
+        // This table leaks `secret` if `B` is not in the G2 subgroup.
+        let b_g2_check = g2_subgroup_check::Table::garble::<P>(
+            parent_nonce,
+            prg_unseeded,
+            rng,
+            Some(&secret),
+            &b_ec_mac_key,
+        )
+        .0;
+
+        let c_range_check = [&input_mac_key.C.x, &input_mac_key.C.y]
+            .iter()
+            .map(|input_mac_key| {
+                less_than::Table::<Fq>::garble::<P>(
+                    parent_nonce,
+                    prg_unseeded,
+                    rng,
+                    Some(secret),
+                    input_mac_key,
+                )
+                .0
+            })
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+
+        // Garbling table to check that `C` is a valid G1 curve point.
+        // This table leaks `secret` if `C` is not a valid curve point.
+        let c_curve_check = curve_membership::Table::garble::<P>(
+            parent_nonce,
+            prg_unseeded,
+            rng,
+            Some(secret),
+            // Input MAC key for the (x, y) coordinates of `C`
+            &input_mac_key.C,
+        )
+        .0;
+
+        // Garbling table to check `x` is a valid Fr element.
+        // This table leaks `secret` if `x` is not a valid Fr element.
+        let x_range_check = less_than::Table::<Fr>::garble::<P>(
+            parent_nonce,
+            prg_unseeded,
+            rng,
+            Some(secret),
+            &input_mac_key.x,
+        )
+        .0;
+
+        let table = Self {
+            x_range_check,
+            a_range_check,
+            a_curve_check,
+            b_range_check,
+            b_curve_check,
+            b_g2_check,
+            c_range_check,
+            c_curve_check,
+        };
+
+        (table, IdentityMacKey)
+    }
+
+    pub(crate) fn evaluate<P: crate::utils::PRG>(
+        &self,
+        parent_nonce: &mut crate::garble::Nonce,
+        prg_unseeded: &P::Unseeded,
+        input: &Input,
+        input_mac: &InputMac,
+        b_ec_mac: &IteratedMac<G2Affine, EndoMac<g2::Config>, KAPPA_B>,
+    ) -> (Fq, IdentityMac<Fq>) {
+        // The Groth16 input (A, B, C).
+        let Input { A, B, C, x } = *input;
+
+        // Checks that A.x, A.y are valid Fq elements, returning the `secret`
+        // otherwise.
+        {
+            let inputs = [input.A.x, input.A.y];
+            let input_macs = [&input_mac.A.x, &input_mac.A.y];
+
+            for ((input, input_mac), table) in inputs
+                .iter()
+                .zip(input_macs.iter())
+                .zip(self.a_range_check.iter())
+            {
+                let secret = table
+                    .evaluate::<P>(parent_nonce, prg_unseeded, input, input_mac)
+                    .0;
+                if !is_valid(*input) {
+                    return (secret, IdentityMac(PhantomData));
+                }
+            }
+        }
+
+        // Evaluate the curve validity check table for `A`. This evaluates to
+        // `secret` if `A` is not a valid curve point.
+        let a_curve_check = self
+            .a_curve_check
+            .evaluate::<P>(parent_nonce, prg_unseeded, &A.into(), &input_mac.A)
+            .0;
+        // If `A` is not a valid curve point, return `secret` early
+        if !a_curve_check.is_zero() {
+            return (a_curve_check, IdentityMac(PhantomData));
+        }
+
+        // Checks that B.x, B.y are valid Fq elements, returning the `secret`
+        // otherwise.
+        {
+            let x0_mac = input_mac.B.x[..Fq::num_bits() as usize].to_vec().into();
+            let x1_mac = input_mac.B.x[Fq::num_bits() as usize..].to_vec().into();
+            let y0_mac = input_mac.B.y[..Fq::num_bits() as usize].to_vec().into();
+            let y1_mac = input_mac.B.y[Fq::num_bits() as usize..].to_vec().into();
+
+            let inputs = [input.B.x.c0, input.B.x.c1, input.B.y.c0, input.B.y.c1];
+            let input_macs = [x0_mac, x1_mac, y0_mac, y1_mac];
+
+            for ((input, input_mac), table) in inputs
+                .iter()
+                .zip(input_macs.iter())
+                .zip(self.b_range_check.iter())
+            {
+                let secret = table
+                    .evaluate::<P>(parent_nonce, prg_unseeded, input, input_mac)
+                    .0;
+                if !is_valid(*input) {
+                    return (secret, IdentityMac(PhantomData));
+                }
+            }
+        }
+
+        // Evaluate the curve validity check table for `B`. This evaluates to
+        // `secret` if `B` is not a valid curve point.
+        let b_curve_check = self
+            .b_curve_check
+            .evaluate::<P>(parent_nonce, prg_unseeded, &B.into(), &input_mac.B)
+            .0;
+        // If `B` is not a valid curve point, return `secret` early
+        if !b_curve_check.is_zero() {
+            return (
+                b_curve_check.to_base_prime_field_elements().next().unwrap(),
+                IdentityMac(PhantomData),
+            );
+        }
+
+        let b_g2_check = self
+            .b_g2_check
+            .evaluate::<P>(parent_nonce, prg_unseeded, &B, &b_ec_mac)
+            .0;
+        // If B is not in the G2 subgroup, return `secret early`
+        if !b_g2_check.is_zero() {
+            return (b_g2_check, IdentityMac(PhantomData));
+        }
+
+        // Checks that C.x, C.y are valid Fq elements, returning the `secret`
+        // otherwise.
+        {
+            let inputs = [input.C.x, input.C.y];
+            let input_macs = [&input_mac.C.x, &input_mac.C.y];
+
+            for ((input, input_mac), table) in inputs
+                .iter()
+                .zip(input_macs.iter())
+                .zip(self.c_range_check.iter())
+            {
+                let secret = table
+                    .evaluate::<P>(parent_nonce, prg_unseeded, input, input_mac)
+                    .0;
+                if !is_valid(*input) {
+                    return (secret, IdentityMac(PhantomData));
+                }
+            }
+        }
+
+        // Evaluate the curve validity check table for `C`. This evaluates to
+        // `secret` if `C` is not a valid curve point.
+        let c_curve_check = self
+            .c_curve_check
+            .evaluate::<P>(parent_nonce, prg_unseeded, &C.into(), &input_mac.C)
+            .0;
+        // If `C` is not a valid curve point, return `secret` early
+        if !c_curve_check.is_zero() {
+            return (c_curve_check, IdentityMac(PhantomData));
+        }
+
+        // Evaluate the range check for `x`.
+        let x_range_check = self
+            .x_range_check
+            .evaluate::<P>(parent_nonce, prg_unseeded, &x, &input_mac.x)
+            .0;
+        // If `x` is not a valid Fr element, return `secret` early
+        if !is_valid(x) {
+            return (x_range_check, IdentityMac(PhantomData));
+        }
+
+        (Fq::ZERO, IdentityMac(PhantomData))
+    }
+}
+
+#[test]
+/// If any of the input (A, B, C) is an invalid curve point, the circuit should
+/// leak the same `secret`.
+fn test_malformed_curve_points() {
+    use aes::Aes128;
+    use ark_bn254::G1Affine;
+    use ark_ff::PrimeField;
+    use ark_std::{
+        UniformRand,
+        rand::{SeedableRng, rngs::StdRng},
+    };
+
+    use crate::garble::{
+        Nonce, g2_subgroup_check::get_curve_point_not_in_g2, groth16_verifier::InputMacKey,
+    };
+    use crate::mac::{Mac, MacKey};
+    use crate::utils::{PRG, prg::aes_ctr::clear_set};
+
+    const SEED: u64 = 0;
+
+    let unseeded_prg = Aes128::init(&[]);
+
+    let mut rng = StdRng::seed_from_u64(SEED);
+    let secret = Fq::rand(&mut rng);
+
+    let fq_modulus = Fq::new_unchecked(Fr::MODULUS);
+
+    // Evaluate the same circuit on differently malformed inputs, check that
+    // we recover the same secret
+    let input = InputMac::random_input(&mut rng);
+    let input_mac_key = InputMacKey::random_key(&mut rng);
+
+    let b_ec_mac_key = <[EndoMacKey<g2::Config>; KAPPA_B]>::random_key(&mut rng);
+
+    let table = Table::garble::<Aes128>(
+        &mut Nonce::new(),
+        &unseeded_prg,
+        &mut rng,
+        &secret,
+        &input_mac_key,
+        &b_ec_mac_key,
+    )
+    .0;
+    clear_set();
+
+    let inputs = {
+        let malformed_a: Vec<_> = {
+            let invalid_x = G1Affine::new_unchecked(fq_modulus, Fq::rand(&mut rng));
+            let invalid_y = G1Affine::new_unchecked(fq_modulus, Fq::rand(&mut rng));
+            let invalid_curve_point =
+                G1Affine::new_unchecked(Fq::rand(&mut rng), Fq::rand(&mut rng));
+
+            [invalid_x, invalid_y, invalid_curve_point]
+        }
+        .iter()
+        .map(|A| {
+            let mut input = input;
+            input.A = *A;
+            input
+        })
+        .collect();
+
+        let malformed_b: Vec<_> = {
+            let invalid_x0 = {
+                let x = Fq2 {
+                    c0: fq_modulus,
+                    c1: Fq::rand(&mut rng),
+                };
+                let y = Fq2::rand(&mut rng);
+
+                G2Affine::new_unchecked(x, y)
+            };
+
+            let invalid_x1 = {
+                let x = Fq2 {
+                    c0: Fq::rand(&mut rng),
+                    c1: fq_modulus,
+                };
+                let y = Fq2::rand(&mut rng);
+
+                G2Affine::new_unchecked(x, y)
+            };
+
+            let invalid_y0 = {
+                let x = Fq2::rand(&mut rng);
+                let y = Fq2 {
+                    c0: fq_modulus,
+                    c1: Fq::rand(&mut rng),
+                };
+
+                G2Affine::new_unchecked(x, y)
+            };
+
+            let invalid_y1 = {
+                let x = Fq2::rand(&mut rng);
+                let y = Fq2 {
+                    c0: Fq::rand(&mut rng),
+                    c1: fq_modulus,
+                };
+
+                G2Affine::new_unchecked(x, y)
+            };
+
+            let invalid_curve_point =
+                G2Affine::new_unchecked(Fq2::rand(&mut rng), Fq2::rand(&mut rng));
+            let non_g2_point = get_curve_point_not_in_g2(&mut rng);
+
+            [
+                invalid_x0,
+                invalid_x1,
+                invalid_y0,
+                invalid_y1,
+                invalid_curve_point,
+                non_g2_point,
+            ]
+        }
+        .iter()
+        .map(|B| {
+            let mut input = input;
+            input.B = *B;
+            input
+        })
+        .collect();
+
+        let malformed_c: Vec<_> = {
+            let invalid_x = G1Affine::new_unchecked(fq_modulus, Fq::rand(&mut rng));
+            let invalid_y = G1Affine::new_unchecked(fq_modulus, Fq::rand(&mut rng));
+            let invalid_curve_point =
+                G1Affine::new_unchecked(Fq::rand(&mut rng), Fq::rand(&mut rng));
+
+            [invalid_x, invalid_y, invalid_curve_point]
+        }
+        .iter()
+        .map(|C| {
+            let mut input = input;
+            input.C = *C;
+            input
+        })
+        .collect();
+
+        let malformed_x = {
+            let mut input = input;
+            input.x = Fr::new_unchecked(Fr::MODULUS);
+            input
+        };
+
+        malformed_a
+            .into_iter()
+            .chain(malformed_b.into_iter())
+            .chain(malformed_c.into_iter())
+            .chain(Some(malformed_x))
+    };
+
+    let mut secrets = inputs.map(|input| {
+        clear_set();
+
+        let input_mac = input_mac_key.encode(&input);
+        let b_ec_mac = b_ec_mac_key.encode(&input.B);
+        table
+            .evaluate::<Aes128>(
+                &mut Nonce::new(),
+                &unseeded_prg,
+                &input,
+                &input_mac,
+                &b_ec_mac,
+            )
+            .0
+    });
+
+    secrets.all(|recovered_secret| recovered_secret == secret);
+}

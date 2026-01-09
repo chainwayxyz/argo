@@ -1,3 +1,4 @@
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 #[cfg(test)]
 use ark_std::rand::Rng;
 use ark_std::rand::RngCore;
@@ -16,6 +17,7 @@ use crate::{
 };
 
 /// (x + p) (a + p) + a
+#[derive(Debug, CanonicalSerialize, CanonicalDeserialize)]
 pub(crate) struct Table {
     // (x + p)
     x_p: xor::Table,
