@@ -66,11 +66,11 @@ where
         });
         let k = point.batch_mul(&randomised_ks);
 
-        let mut keys = Vec::with_capacity(KAPPA);
-        phis.iter().zip(k.into_iter()).for_each(|(phi, k)| {
+        let mut keys: Vec<EndoMacKey<C>> = Vec::with_capacity(KAPPA);
+        phis.iter().zip(k).for_each(|(phi, k)| {
             keys.push(EndoMacKey {
                 phi: phi.clone(),
-                k: k.into(),
+                k,
             })
         });
 
@@ -108,7 +108,7 @@ where
                     prg_unseeded,
                     rng,
                     Some(&phi),
-                    &bit_mac_key,
+                    bit_mac_key,
                 )
             })
             .collect();

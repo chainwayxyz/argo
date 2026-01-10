@@ -121,8 +121,8 @@ where
 
         let enc_s = {
             let mac_false = output_mac_key.encode(&false);
-            let xof = P::seed(prg_unseeded, &*mac_false);
-            let pad: Fq = xof.hash_to_field(&mut nonce);
+            let xof = P::seed(prg_unseeded, &mac_false);
+            let pad: Fq = xof.hash_to_field(&nonce);
 
             *secret + pad
         };
@@ -188,8 +188,8 @@ where
             });
 
         let secret = {
-            let xof = P::seed(prg_unseeded, &*output_mac);
-            let pad: Fq = xof.hash_to_field(&mut nonce);
+            let xof = P::seed(prg_unseeded, &output_mac);
+            let pad: Fq = xof.hash_to_field(&nonce);
             self.enc_s - pad
         };
 

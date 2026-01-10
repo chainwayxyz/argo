@@ -35,7 +35,7 @@ impl Circuit<bool, Bit16ByteMac, bool, Bit16ByteMac> for Table<Bit16ByteMac, Bit
             Bit16ByteMac,
             Bit16ByteMac,
         >>::derive_output_mac_key::<P>(
-            &input_mac_key, prg_unseeded, &parent_nonce, phi
+            input_mac_key, prg_unseeded, parent_nonce, phi
         );
 
         // We encrypt the encoding of output_mac_key.encode(true), using

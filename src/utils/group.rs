@@ -101,9 +101,9 @@ where
 
     let N = F::MODULUS_BIT_SIZE as usize;
     for i in 0..N {
-        if value_bits[N - i - 1] < modulus_bits[N - i - 1] {
+        if !value_bits[N - i - 1] & modulus_bits[N - i - 1] {
             return true;
-        } else if value_bits[N - i - 1] > modulus_bits[N - i - 1] {
+        } else if value_bits[N - i - 1] & !modulus_bits[N - i - 1] {
             return false;
         }
     }

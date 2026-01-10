@@ -268,7 +268,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
                     verifier_key.G1.into(),
                     c_phis.try_into().unwrap_or_else(|_| panic!()),
                 )),
-                &input_mac_key,
+                input_mac_key,
             )
         };
 

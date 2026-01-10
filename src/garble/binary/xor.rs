@@ -40,12 +40,10 @@ impl InputMacKey {
 
         // OutputMacKey phi has to be the same as InputMacKey
         // OutputMacKey k is the XOR of InputMacKey.left.k, InputMacKey.right.k
-        let output_mac_key = BitMacKey {
+        BitMacKey {
             key: Bit16ByteMacKey { phi, k },
             _marker: PhantomData,
-        };
-
-        output_mac_key
+        }
     }
 }
 

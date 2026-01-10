@@ -23,9 +23,9 @@ impl<Op: BooleanOp> From<Bit16ByteMacKey> for BitMacKey<Op> {
     }
 }
 
-impl<Op: BooleanOp> Into<Bit16ByteMacKey> for BitMacKey<Op> {
-    fn into(self) -> Bit16ByteMacKey {
-        self.key
+impl<Op: BooleanOp> From<BitMacKey<Op>> for Bit16ByteMacKey {
+    fn from(value: BitMacKey<Op>) -> Self {
+        value.key
     }
 }
 
@@ -57,10 +57,10 @@ impl From<BitMacKey<()>> for BitMacKey<Xor> {
     }
 }
 
-impl Into<BitMacKey<()>> for BitMacKey<Xor> {
-    fn into(self) -> BitMacKey<()> {
-        BitMacKey {
-            key: self.key,
+impl From<BitMacKey<Xor>> for BitMacKey<()> {
+    fn from(value: BitMacKey<Xor>) -> Self {
+        Self {
+            key: value.key,
             _marker: PhantomData,
         }
     }
@@ -75,10 +75,10 @@ impl From<BitMacKey<()>> for BitMacKey<And> {
     }
 }
 
-impl Into<BitMacKey<()>> for BitMacKey<And> {
-    fn into(self) -> BitMacKey<()> {
-        BitMacKey {
-            key: self.key,
+impl From<BitMacKey<And>> for BitMacKey<()> {
+    fn from(value: BitMacKey<And>) -> Self {
+        Self {
+            key: value.key,
             _marker: PhantomData,
         }
     }
@@ -133,9 +133,9 @@ impl<Op: BooleanOp> From<Bit16ByteMac> for BitMac<Op> {
     }
 }
 
-impl<Op: BooleanOp> Into<Bit16ByteMac> for BitMac<Op> {
-    fn into(self) -> Bit16ByteMac {
-        self.mac
+impl<Op: BooleanOp> From<BitMac<Op>> for Bit16ByteMac {
+    fn from(value: BitMac<Op>) -> Self {
+        value.mac
     }
 }
 
@@ -203,10 +203,6 @@ impl<Op: BooleanOp> BinaryInput<Op> {
         }
     }
 
-    pub(crate) fn left(&self) -> bool {
-        self.left
-    }
-
     pub(crate) fn right(&self) -> bool {
         self.right
     }
@@ -217,38 +213,6 @@ impl<Op: BooleanOp> BinaryInput<Op> {
 
     pub(crate) fn and(&self) -> bool {
         self.left & self.right
-    }
-
-    fn case_00() -> Self {
-        Self {
-            left: false,
-            right: false,
-            _marker: PhantomData,
-        }
-    }
-
-    fn case_01() -> Self {
-        Self {
-            left: false,
-            right: true,
-            _marker: PhantomData,
-        }
-    }
-
-    fn case_10() -> Self {
-        Self {
-            left: true,
-            right: false,
-            _marker: PhantomData,
-        }
-    }
-
-    fn case_11() -> Self {
-        Self {
-            left: true,
-            right: true,
-            _marker: PhantomData,
-        }
     }
 }
 
@@ -263,6 +227,7 @@ impl<Op: BooleanOp> BinaryInputMac<Op> {
         Self { left, right }
     }
 
+    #[allow(unused)]
     pub(crate) fn left(&self) -> BitMac<Op> {
         self.left
     }

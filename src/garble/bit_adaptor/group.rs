@@ -45,7 +45,7 @@ where
             Bit16ByteMac,
             BitGroupMac<G>,
         >>::derive_output_mac_key::<P>(
-            &input_mac_key, prg_unseeded, &mut nonce, phi
+            input_mac_key, prg_unseeded, &nonce, phi
         );
 
         // We encrypt the encoding of output_mac_key.encode(true), using

@@ -93,7 +93,7 @@ impl Table {
                         prg_unseeded,
                         rng,
                         Some(secret),
-                        &input_mac_key,
+                        input_mac_key,
                     )
                     .0
                 })
@@ -120,8 +120,8 @@ impl Table {
             parent_nonce,
             prg_unseeded,
             rng,
-            Some(&secret),
-            &b_ec_mac_key,
+            Some(secret),
+            b_ec_mac_key,
         )
         .0;
 
@@ -261,7 +261,7 @@ impl Table {
 
         let b_g2_check = self
             .b_g2_check
-            .evaluate::<P>(parent_nonce, prg_unseeded, &B, &b_ec_mac)
+            .evaluate::<P>(parent_nonce, prg_unseeded, &B, b_ec_mac)
             .0;
         // If B is not in the G2 subgroup, return `secret early`
         if !b_g2_check.is_zero() {
