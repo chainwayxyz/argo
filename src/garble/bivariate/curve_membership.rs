@@ -20,7 +20,6 @@ use crate::{
     utils::{
         bits::{FromBits, NumBits, ToBits},
         group::FromLeBytesModOrder,
-        prg::PRG,
     },
 };
 
@@ -95,9 +94,8 @@ where
     // s
     type Aux = C::BaseField;
 
-    fn garble<P: PRG>(
+    fn garble(
         parent_nonce: &mut Nonce,
-        prg_unseeded: &P::Unseeded,
         rng: &mut StdRng,
         aux: Option<&Self::Aux>,
         input_mac_key: &InputMacKey<C::BaseField>,
@@ -119,13 +117,8 @@ where
         let y_adaptors = {
             // c'_4
             let table_0 = {
-                let (table, output_mac_key) = digit_adaptor::Table::garble::<P>(
-                    &mut nonce,
-                    prg_unseeded,
-                    rng,
-                    Some(&-rs[2]),
-                    &input_mac_key.y,
-                );
+                let (table, output_mac_key) =
+                    digit_adaptor::Table::garble(&mut nonce, rng, Some(&-rs[2]), &input_mac_key.y);
                 rs[4] = output_mac_key.from_bits_k();
 
                 table
@@ -133,13 +126,8 @@ where
 
             // c'_6
             let table_1 = {
-                let (table, output_mac_key) = digit_adaptor::Table::garble::<P>(
-                    &mut nonce,
-                    prg_unseeded,
-                    rng,
-                    Some(&-rs[4]),
-                    &input_mac_key.y,
-                );
+                let (table, output_mac_key) =
+                    digit_adaptor::Table::garble(&mut nonce, rng, Some(&-rs[4]), &input_mac_key.y);
 
                 rs[6] = output_mac_key.from_bits_k();
 
@@ -157,13 +145,8 @@ where
         let x_adaptors = {
             // c'_3
             let table_0 = {
-                let (table, output_mac_key) = digit_adaptor::Table::garble::<P>(
-                    &mut nonce,
-                    prg_unseeded,
-                    rng,
-                    Some(&-rs[1]),
-                    &input_mac_key.x,
-                );
+                let (table, output_mac_key) =
+                    digit_adaptor::Table::garble(&mut nonce, rng, Some(&-rs[1]), &input_mac_key.x);
 
                 rs[3] = output_mac_key.from_bits_k();
 
@@ -172,13 +155,8 @@ where
 
             // c'_5
             let table_1 = {
-                let (table, output_mac_key) = digit_adaptor::Table::garble::<P>(
-                    &mut nonce,
-                    prg_unseeded,
-                    rng,
-                    Some(&-rs[3]),
-                    &input_mac_key.x,
-                );
+                let (table, output_mac_key) =
+                    digit_adaptor::Table::garble(&mut nonce, rng, Some(&-rs[3]), &input_mac_key.x);
                 rs[5] = output_mac_key.from_bits_k();
 
                 table
@@ -186,13 +164,8 @@ where
 
             // c'_7
             let table_2 = {
-                let (table, output_mac_key) = digit_adaptor::Table::garble::<P>(
-                    &mut nonce,
-                    prg_unseeded,
-                    rng,
-                    Some(&-rs[5]),
-                    &input_mac_key.x,
-                );
+                let (table, output_mac_key) =
+                    digit_adaptor::Table::garble(&mut nonce, rng, Some(&-rs[5]), &input_mac_key.x);
                 rs[7] = output_mac_key.from_bits_k();
 
                 table
@@ -226,10 +199,9 @@ where
         )
     }
 
-    fn evaluate<P: PRG>(
+    fn evaluate(
         &self,
         parent_nonce: &mut Nonce,
-        prg_unseeded: &P::Unseeded,
         input: &Input<C::BaseField>,
         input_mac: &InputMac<C::BaseField>,
     ) -> (C::BaseField, IdentityMac<C::BaseField>) {
@@ -238,17 +210,13 @@ where
         let [c_prime_0, c_prime_1, c_prime_2] = self.c_primes;
 
         let evaluate_x = |table: &digit_adaptor::Table<C::BaseField>, nonce: &mut Nonce| {
-            let digit_mac = table
-                .evaluate::<P>(nonce, prg_unseeded, &input.x, &input_mac.x)
-                .1;
+            let digit_mac = table.evaluate(nonce, &input.x, &input_mac.x).1;
             let field_elems = digit_mac.iter().map(|mac| **mac);
             C::BaseField::from_bits(field_elems)
         };
 
         let evaluate_y = |table: &digit_adaptor::Table<C::BaseField>, nonce: &mut Nonce| {
-            let digit_mac = table
-                .evaluate::<P>(nonce, prg_unseeded, &input.y, &input_mac.y)
-                .1;
+            let digit_mac = table.evaluate(nonce, &input.y, &input_mac.y).1;
             let field_elems = digit_mac.iter().map(|mac| **mac);
             C::BaseField::from_bits(field_elems)
         };
@@ -293,29 +261,20 @@ where
         + Random,
     <C::BaseField as Field>::BasePrimeField: FromLeBytesModOrder,
 {
-    use crate::{mac::MacKey, utils::prg::aes_ctr::clear_set};
-    use aes::Aes128;
+    use crate::{mac::MacKey, utils::aes_hash::aes_ctr::clear_set};
 
     let s = C::BaseField::rand(rng);
-    let unseeded_prg = Aes128::init(&[]);
 
     let input_mac_key = InputMacKey::random_key(rng);
 
-    let garbling_table = Table::<C>::garble::<Aes128>(
-        &mut Nonce::new(),
-        &unseeded_prg,
-        rng,
-        Some(&s),
-        &input_mac_key,
-    )
-    .0;
+    let garbling_table = Table::<C>::garble(&mut Nonce::new(), rng, Some(&s), &input_mac_key).0;
     clear_set();
 
     let input_mac = input_mac_key.encode(&input);
 
     let curve_eqn = Table::<C>::coord_plaintext(&input);
     let evaluated_output = garbling_table
-        .evaluate::<Aes128>(&mut Nonce::new(), &unseeded_prg, &input, &input_mac)
+        .evaluate(&mut Nonce::new(), &input, &input_mac)
         .0;
     clear_set();
 

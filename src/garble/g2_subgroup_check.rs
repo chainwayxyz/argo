@@ -16,7 +16,7 @@ use ark_ec::{CurveGroup, short_weierstrass::Affine};
 use ark_ff::{AdditiveGroup, PrimeField};
 use ark_std::rand::rngs::StdRng;
 
-use crate::garble::pairing::KAPPA_B;
+use crate::garble::groth16_verifier::KAPPA_B;
 use crate::garble::{Circuit, conditional_reveal};
 use crate::mac::endo::{EndoScalar, IteratedEndoMac};
 use crate::mac::{IdentityMac, IdentityMacKey};
@@ -35,9 +35,8 @@ pub(crate) struct Table {
 impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
     type Aux = Fq;
 
-    fn garble<P: crate::utils::PRG>(
+    fn garble(
         _parent_nonce: &mut super::Nonce,
-        _prg_unseeded: &P::Unseeded,
         _rng: &mut StdRng,
         aux: Option<&Self::Aux>,
         input_mac_key: &<InputMac as crate::mac::Mac<Input>>::Key,
@@ -62,10 +61,9 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         (table, IdentityMacKey)
     }
 
-    fn evaluate<P: crate::utils::PRG>(
+    fn evaluate(
         &self,
         _parent_nonce: &mut super::Nonce,
-        _prg_unseeded: &P::Unseeded,
         input: &Input,
         input_mac: &InputMac,
     ) -> (Output, IdentityMac<Output>) {
@@ -105,11 +103,9 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
             });
 
         let phis = if recovered_phis.iter().all(Option::is_some) {
-            let recovered_phis: Option<Vec<usize>> = recovered_phis.into_iter().collect();
             recovered_phis
-                .unwrap()
                 .iter()
-                .map(|&idx| phis[idx].clone())
+                .map(|&idx| phis[idx.unwrap()].clone())
                 .collect()
         } else {
             EndoScalar::<g2::Config>::decode(&recovered_phis)
@@ -122,35 +118,17 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
     }
 }
 
-pub(crate) fn get_curve_point_not_in_g2(rng: &mut StdRng) -> Affine<g2::Config> {
-    use ark_bn254::Fq2;
-    use ark_ff::UniformRand;
-    use ark_std::Zero;
-
-    loop {
-        let x = Fq2::rand(rng);
-        if let Some(point) = Affine::get_point_from_x_unchecked(x, false)
-            && !point.mul_bigint(Fr::MODULUS).is_zero()
-        {
-            return point;
-        }
-    }
-}
-
 #[test]
 fn test_g2_subgroup_check() {
     use crate::{
         garble::Nonce,
         mac::{MacKey, endo::EndoMacKey},
-        utils::prg::PRG,
+        utils::group::get_curve_point_not_in_g2,
     };
-    use aes::Aes128;
     use ark_std::{
         UniformRand,
         rand::{SeedableRng, rngs::StdRng},
     };
-
-    let unseeded_prg = Aes128::init(&[]);
 
     const SEED: u64 = 0;
 
@@ -161,18 +139,9 @@ fn test_g2_subgroup_check() {
     let input_mac_key = <[EndoMacKey<g2::Config>; KAPPA_B]>::random_key(&mut rng);
     let input_mac = input_mac_key.encode(&input);
 
-    let table = Table::garble::<Aes128>(
-        &mut Nonce::new(),
-        &unseeded_prg,
-        &mut rng,
-        Some(&secret),
-        &input_mac_key,
-    )
-    .0;
+    let table = Table::garble(&mut Nonce::new(), &mut rng, Some(&secret), &input_mac_key).0;
 
-    let output = table
-        .evaluate::<Aes128>(&mut Nonce::new(), &unseeded_prg, &input, &input_mac)
-        .0;
+    let output = table.evaluate(&mut Nonce::new(), &input, &input_mac).0;
 
     assert_eq!(output, secret);
 }
@@ -207,16 +176,12 @@ fn test_g2_subgroup_check_decoding_error() {
     use crate::{
         garble::Nonce,
         mac::{MacKey, endo::EndoMacKey},
-        utils::prg::PRG,
     };
-    use aes::Aes128;
     use ark_ec::CurveConfig;
     use ark_std::{
         UniformRand,
         rand::{SeedableRng, rngs::StdRng},
     };
-
-    let unseeded_prg = Aes128::init(&[]);
 
     const SEED: u64 = 0;
 
@@ -311,18 +276,9 @@ fn test_g2_subgroup_check_decoding_error() {
 
     let input_mac = input_mac_key.encode(&input);
 
-    let table = Table::garble::<Aes128>(
-        &mut Nonce::new(),
-        &unseeded_prg,
-        &mut rng,
-        Some(&secret),
-        &input_mac_key,
-    )
-    .0;
+    let table = Table::garble(&mut Nonce::new(), &mut rng, Some(&secret), &input_mac_key).0;
 
-    let output = table
-        .evaluate::<Aes128>(&mut Nonce::new(), &unseeded_prg, &input, &input_mac)
-        .0;
+    let output = table.evaluate(&mut Nonce::new(), &input, &input_mac).0;
 
     assert_eq!(output, secret);
 }

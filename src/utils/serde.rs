@@ -5,10 +5,7 @@ use ark_serialize::{
 };
 
 use crate::{
-    garble::{
-        g2_subgroup_check,
-        pairing::{self, KAPPA_B},
-    },
+    garble::{g2_subgroup_check, groth16_verifier::KAPPA_B, pairing},
     mac::{IteratedMac, Mac},
 };
 use std::fmt::Debug;

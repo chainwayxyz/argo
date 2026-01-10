@@ -14,9 +14,9 @@ use crate::{
         digit::{bytes, group},
     },
     utils::{
+        aes_hash::aes_ctr::AesCtr,
         bits::{FromBits, NumBits, ToBits},
         group::FromLeBytesModOrder,
-        prg::PRG,
     },
 };
 use ark_ff::Field;
@@ -24,7 +24,7 @@ use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::rngs::StdRng;
 
 #[derive(CanonicalSerialize, CanonicalDeserialize)]
-pub(crate) struct Table<F>(Vec<bit_adaptor::Table<Bit16ByteMac, BitGroupMac<F>>>)
+pub(crate) struct Table<F>(Vec<bit_adaptor::Table<AesCtr, Bit16ByteMac, BitGroupMac<F>>>)
 where
     F: Field + NumBits + FromBits<bool, F> + Random,
     F::BasePrimeField: FromLeBytesModOrder;
@@ -44,9 +44,8 @@ where
 {
     type Aux = F;
 
-    fn garble<P: PRG>(
+    fn garble(
         parent_nonce: &mut Nonce,
-        prg_unseeded: &P::Unseeded,
         rng: &mut StdRng,
         aux: Option<&Self::Aux>,
         input_mac_key: &InputMacKey<F>,
@@ -58,7 +57,7 @@ where
 
         input_mac_key.iter().for_each(|input_key| {
             let (table, output_mac_key) =
-                bit_adaptor::Table::garble::<P>(&mut nonce, prg_unseeded, rng, aux, input_key);
+                bit_adaptor::Table::garble(&mut nonce, rng, aux, input_key);
             bit_adaptor_tables.push(table);
             output_mac_keys.push(output_mac_key);
         });
@@ -66,10 +65,9 @@ where
         (Self(bit_adaptor_tables), output_mac_keys.into())
     }
 
-    fn evaluate<P: PRG>(
+    fn evaluate(
         &self,
         parent_nonce: &mut Nonce,
-        prg_unseeded: &P::Unseeded,
         input: &F,
         input_mac: &InputMac<F>,
     ) -> (F, OutputMac<F>) {
@@ -84,9 +82,7 @@ where
             .zip(input_mac.iter())
             .zip(self.0.iter())
             .for_each(|((input, input_mac), table)| {
-                let table = table
-                    .evaluate::<P>(&mut nonce, prg_unseeded, input, input_mac)
-                    .1;
+                let table = table.evaluate(&mut nonce, input, input_mac).1;
                 bit_group_macs.push(table);
             });
 
@@ -100,16 +96,13 @@ where
     F: Field + NumBits + ToBits + FromBits<F, F> + FromBits<bool, F> + Random,
     F::BasePrimeField: FromLeBytesModOrder,
 {
-    use aes::Aes128;
     use ark_std::rand::SeedableRng;
 
-    use crate::mac::MacKey;
-    use crate::utils::prg::aes_ctr::clear_set;
+    use crate::{mac::MacKey, utils::aes_hash::aes_ctr::clear_set};
 
     const SEED: u64 = 0;
 
     let mut rng = StdRng::seed_from_u64(SEED);
-    let unseeded_prg = Aes128::init(&[]);
 
     let input = F::rand(&mut rng);
     let output = input;
@@ -119,19 +112,12 @@ where
 
     let input_mac = input_mac_key.encode(&input);
 
-    let (table, output_mac_key) = Table::garble::<Aes128>(
-        &mut Nonce::new(),
-        &unseeded_prg,
-        &mut rng,
-        Some(&phi),
-        &input_mac_key,
-    );
+    let (table, output_mac_key) =
+        Table::garble(&mut Nonce::new(), &mut rng, Some(&phi), &input_mac_key);
     clear_set();
 
     let expected_output_mac = output_mac_key.encode(&output);
-    let evaluated_output_mac = table
-        .evaluate::<Aes128>(&mut Nonce::new(), &unseeded_prg, &input, &input_mac)
-        .1;
+    let evaluated_output_mac = table.evaluate(&mut Nonce::new(), &input, &input_mac).1;
     clear_set();
 
     assert_eq!(expected_output_mac, evaluated_output_mac);

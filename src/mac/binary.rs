@@ -151,14 +151,13 @@ impl<Op: BooleanOp> std::ops::BitXor for BitMac<Op> {
     type Output = Self;
 
     fn bitxor(self, rhs: Self) -> Self::Output {
-        let output: [u8; 16] = self
-            .mac
-            .iter()
+        let mut output = [0; 16];
+        output
+            .iter_mut()
+            .zip(self.mac.iter())
             .zip(rhs.mac.iter())
-            .map(|(lhs, rhs)| lhs ^ rhs)
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap();
+            .for_each(|((output, lhs), rhs)| *output = lhs ^ rhs);
+
         Self {
             mac: output.into(),
             _marker: PhantomData,

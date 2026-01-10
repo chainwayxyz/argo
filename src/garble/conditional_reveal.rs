@@ -145,11 +145,9 @@ impl<const KAPPA: usize> Table<KAPPA> {
         });
 
         let phis = if recovered_phis.iter().all(Option::is_some) {
-            let recovered_phis: Option<Vec<usize>> = recovered_phis.into_iter().collect();
             recovered_phis
-                .unwrap()
                 .iter()
-                .map(|&idx| phis[idx].clone())
+                .map(|&idx| phis[idx.unwrap()].clone())
                 .collect()
         } else {
             EndoScalar::<G1Config>::decode(&recovered_phis)
@@ -167,7 +165,7 @@ impl<const KAPPA: usize> Table<KAPPA> {
 
 #[test]
 fn test_conditional_reveal_valid() {
-    use crate::garble::pairing::KAPPA_B;
+    use crate::garble::groth16_verifier::KAPPA_B;
     use ark_std::{
         UniformRand,
         rand::{SeedableRng, rngs::StdRng},
@@ -194,7 +192,7 @@ fn test_conditional_reveal_valid() {
 
 #[test]
 fn test_conditional_reveal_invalid() {
-    use crate::garble::pairing::KAPPA_B;
+    use crate::garble::groth16_verifier::KAPPA_B;
     use ark_std::{
         UniformRand,
         rand::{SeedableRng, rngs::StdRng},

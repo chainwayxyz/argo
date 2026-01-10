@@ -13,9 +13,9 @@ use ark_std::rand::{Rng, rngs::StdRng};
 use derive_more::{Deref, From};
 
 use crate::{
-    garble::{bivariate::Poly, g2_subgroup_check::get_curve_point_not_in_g2, pairing::KAPPA_B},
+    garble::{bivariate::Poly, groth16_verifier::KAPPA_B},
     mac::{IteratedMac, Mac, MacKey, Random, RandomFromPhi},
-    utils::bits::pow_n_lincomb,
+    utils::{bits::pow_n_lincomb, group::get_curve_point_not_in_g2},
 };
 
 pub(crate) const ENDO_SIZE: usize = 7;
@@ -29,6 +29,12 @@ pub(crate) enum EndoScalar<G> {
     Four(PhantomData<G>),
     Five(PhantomData<G>),
     NegInf(PhantomData<G>),
+}
+
+impl<G> Default for EndoScalar<G> {
+    fn default() -> Self {
+        Self::Zero(PhantomData)
+    }
 }
 
 impl<G: GLVConfig> Random for EndoScalar<G> {
@@ -315,7 +321,7 @@ where
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub(crate) struct EndoMacKey<G: GLVConfig> {
     pub(crate) phi: EndoScalar<G>,
     pub(crate) k: Affine<G>,
@@ -374,7 +380,7 @@ pub(crate) struct EndoMultGroupMac(Fq12);
 
 pub(crate) type IteratedEndoMultGroupMac<const N: usize> = IteratedMac<Fq12, EndoMultGroupMac, N>;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(crate) struct EndoMultGroupMacKey {
     pub(crate) phi: EndoScalar<g1::Config>,
     pub(crate) k: Fq12,

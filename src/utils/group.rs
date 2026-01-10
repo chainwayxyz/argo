@@ -1,5 +1,7 @@
-use ark_bn254::{Fq, Fr};
+use ark_bn254::{Fq, Fr, g2};
+use ark_ec::{AffineRepr, short_weierstrass::Affine};
 use ark_ff::{BigInt, BigInteger, PrimeField};
+use ark_std::rand::rngs::StdRng;
 use lazy_static::lazy_static;
 
 use crate::utils::bits::ToBits;
@@ -108,4 +110,19 @@ where
         }
     }
     false
+}
+
+pub(crate) fn get_curve_point_not_in_g2(rng: &mut StdRng) -> Affine<g2::Config> {
+    use ark_bn254::Fq2;
+    use ark_ff::UniformRand;
+    use ark_std::Zero;
+
+    loop {
+        let x = Fq2::rand(rng);
+        if let Some(point) = Affine::get_point_from_x_unchecked(x, false)
+            && !point.mul_bigint(Fr::MODULUS).is_zero()
+        {
+            return point;
+        }
+    }
 }

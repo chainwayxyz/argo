@@ -13,9 +13,9 @@ use crate::{
         },
     },
     utils::{
+        aes_hash::aes_ctr::AesCtr,
         bits::{FromBits, NumBits, ToBits},
         group::FromLeBytesModOrder,
-        prg::PRG,
     },
 };
 
@@ -70,7 +70,7 @@ where
     }
 }
 
-impl<G> DeriveOutputMacKey<G::Scalar, G::Scalar, DigitMac<G>, super::group::DigitMac<G>>
+impl<G> DeriveOutputMacKey<AesCtr, G::Scalar, G::Scalar, DigitMac<G>, super::group::DigitMac<G>>
     for DigitMacKey<G>
 where
     G: Field,
@@ -79,9 +79,9 @@ where
 {
     type Phi = G;
 
-    fn derive_output_mac_key<P: PRG>(
+    fn derive_output_mac_key(
         &self,
-        prg_unseeded: &P::Unseeded,
+        dst: Option<&[u8; 16]>,
         parent_nonce: &Nonce,
         phi: &G,
     ) -> super::group::DigitMacKey<G> {
@@ -89,13 +89,12 @@ where
 
         self.iter().for_each(|input_key| {
             let key = <Bit16ByteMacKey as DeriveOutputMacKey<
+                AesCtr,
                 bool,
                 bool,
                 Bit16ByteMac,
                 BitGroupMac<G>,
-            >>::derive_output_mac_key::<P>(
-                input_key, prg_unseeded, parent_nonce, phi
-            );
+            >>::derive_output_mac_key(input_key, dst, parent_nonce, phi);
             group_mac_keys.push(key);
         });
 

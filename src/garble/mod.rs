@@ -1,6 +1,6 @@
 use ark_std::rand::rngs::StdRng;
 
-use crate::{mac::Mac, utils::prg::PRG};
+use crate::mac::Mac;
 
 pub(crate) mod binary;
 pub(crate) mod bit_adaptor;
@@ -22,9 +22,8 @@ where
     type Aux;
 
     /// Given an input_mac_key, return a garbling table and an output MAC key
-    fn garble<P: PRG>(
+    fn garble(
         parent_nonce: &mut Nonce,
-        prg_unseeded: &P::Unseeded,
         rng: &mut StdRng,
         aux: Option<&Self::Aux>,
         input_mac_key: &<InputMac as Mac<InputValue>>::Key,
@@ -32,10 +31,9 @@ where
 
     /// Given a garbling table, an input, and an input MAC, return an output
     /// value and an output MAC
-    fn evaluate<P: PRG>(
+    fn evaluate(
         &self,
         parent_nonce: &mut Nonce,
-        prg_unseeded: &P::Unseeded,
         input: &InputValue,
         input_mac: &InputMac,
     ) -> (OutputValue, OutputMac);

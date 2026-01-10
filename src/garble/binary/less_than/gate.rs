@@ -13,7 +13,6 @@ use crate::{
         binary::{self, And, BinaryInput, BinaryInputMac, Xor},
         bit::bytes::{Bit16ByteMac, Bit16ByteMacKey},
     },
-    utils::PRG,
 };
 
 /// (x + p) (a + p) + a
@@ -99,11 +98,10 @@ impl MacKey<Input, InputMac> for InputMacKey {
 }
 
 impl Circuit<Input, InputMac, bool, Bit16ByteMac> for Table {
-    type Aux = ();
+    type Aux = [u8; 16];
 
-    fn garble<P: PRG>(
+    fn garble(
         parent_nonce: &mut Nonce,
-        prg_unseeded: &P::Unseeded,
         rng: &mut ark_std::rand::prelude::StdRng,
         aux: Option<&Self::Aux>,
         input_mac_key: &<InputMac as Mac<Input>>::Key,
@@ -117,7 +115,7 @@ impl Circuit<Input, InputMac, bool, Bit16ByteMac> for Table {
                 right: input_mac_key.p.into(),
             };
 
-            xor::Table::garble::<P>(&mut nonce, prg_unseeded, rng, aux, &input_mac_key)
+            xor::Table::garble(&mut nonce, rng, None, &input_mac_key)
         };
 
         // (a + p)
@@ -127,7 +125,7 @@ impl Circuit<Input, InputMac, bool, Bit16ByteMac> for Table {
                 right: input_mac_key.p.into(),
             };
 
-            xor::Table::garble::<P>(&mut nonce, prg_unseeded, rng, aux, &input_mac_key)
+            xor::Table::garble(&mut nonce, rng, None, &input_mac_key)
         };
 
         // x_p & a_p
@@ -137,7 +135,7 @@ impl Circuit<Input, InputMac, bool, Bit16ByteMac> for Table {
                 right: (*ap_output_mac_key).into(),
             };
 
-            and::Table::garble::<P>(&mut nonce, prg_unseeded, rng, aux, &input_mac_key)
+            and::Table::garble(&mut nonce, rng, aux, &input_mac_key)
         };
 
         // xp_ap XOR a
@@ -147,7 +145,7 @@ impl Circuit<Input, InputMac, bool, Bit16ByteMac> for Table {
                 right: input_mac_key.a.into(),
             };
 
-            xor::Table::garble::<P>(parent_nonce, prg_unseeded, rng, aux, &input_mac_key)
+            xor::Table::garble(parent_nonce, rng, None, &input_mac_key)
         };
 
         let table = Self {
@@ -160,10 +158,9 @@ impl Circuit<Input, InputMac, bool, Bit16ByteMac> for Table {
         (table, *output_mac_key)
     }
 
-    fn evaluate<P: PRG>(
+    fn evaluate(
         &self,
         parent_nonce: &mut Nonce,
-        prg_unseeded: &P::Unseeded,
         input: &Input,
         input_mac: &InputMac,
     ) -> (bool, Bit16ByteMac) {
@@ -172,31 +169,27 @@ impl Circuit<Input, InputMac, bool, Bit16ByteMac> for Table {
         let (x_p, xp_mac) = {
             let input = BinaryInput::new(input.x, input.p);
             let input_mac = BinaryInputMac::new(input_mac.x.into(), input_mac.p.into());
-            self.x_p
-                .evaluate::<P>(&mut nonce, prg_unseeded, &input, &input_mac)
+            self.x_p.evaluate(&mut nonce, &input, &input_mac)
         };
 
         let (a_p, ap_mac) = {
             let input = BinaryInput::new(input.a, input.p);
             let input_mac = BinaryInputMac::new(input_mac.a.into(), input_mac.p.into());
-            self.a_p
-                .evaluate::<P>(&mut nonce, prg_unseeded, &input, &input_mac)
+            self.a_p.evaluate(&mut nonce, &input, &input_mac)
         };
 
         let (xp_ap, xp_ap_mac) = {
             let input = BinaryInput::new(x_p, a_p);
             let input_mac = BinaryInputMac::<And>::new((*xp_mac).into(), (*ap_mac).into());
 
-            self.xp_ap
-                .evaluate::<P>(&mut nonce, prg_unseeded, &input, &input_mac)
+            self.xp_ap.evaluate(&mut nonce, &input, &input_mac)
         };
 
         let (output, output_mac) = {
             let input = BinaryInput::new(xp_ap, input.a);
             let input_mac = BinaryInputMac::<Xor>::new((*xp_ap_mac).into(), input_mac.a.into());
 
-            self.output
-                .evaluate::<P>(&mut nonce, prg_unseeded, &input, &input_mac)
+            self.output.evaluate(&mut nonce, &input, &input_mac)
         };
 
         (output, *output_mac)
@@ -205,36 +198,28 @@ impl Circuit<Input, InputMac, bool, Bit16ByteMac> for Table {
 
 #[test]
 fn test_gate() {
-    use crate::utils::prg::aes_ctr::clear_set;
-    use aes::Aes128;
+    use crate::{
+        garble::groth16_verifier::GID, mac::Random, utils::aes_hash::aes_mitccr::clear_set,
+    };
     use ark_std::rand::{SeedableRng, rngs::StdRng};
 
     const SEED: u64 = 0;
     const N: usize = 100;
 
     let mut rng = StdRng::seed_from_u64(SEED);
-    // FIXME use TCCR for this
-    let unseeded_prg = Aes128::init(&[]);
+    let gid = GID::random(&mut rng);
 
     for _ in 0..N {
         let input = InputMac::random_input(&mut rng);
-        println!("input: {:?}", input);
 
         let input_mac_key = InputMacKey::random_key(&mut rng);
         let input_mac = input_mac_key.encode(&input);
 
-        let (circuit, output_mac_key) = Table::garble::<Aes128>(
-            &mut Nonce::new(),
-            &unseeded_prg,
-            &mut rng,
-            None,
-            &input_mac_key,
-        );
+        let (circuit, output_mac_key) =
+            Table::garble(&mut Nonce::new(), &mut rng, Some(&gid), &input_mac_key);
         clear_set();
 
-        let output_mac = circuit
-            .evaluate::<Aes128>(&mut Nonce::new(), &unseeded_prg, &input, &input_mac)
-            .1;
+        let output_mac = circuit.evaluate(&mut Nonce::new(), &input, &input_mac).1;
         clear_set();
 
         let output = input.output();

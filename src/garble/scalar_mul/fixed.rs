@@ -19,7 +19,7 @@ use crate::{
         group::{GroupMac, GroupMacKey},
     },
     utils::{
-        PRG,
+        aes_hash::aes_ctr::AesCtr,
         bits::{FromBits, NumBits, ToBits},
         group::FromLeBytesModOrder,
     },
@@ -40,7 +40,7 @@ where
     C::ScalarField: Random,
     <C::ScalarField as Field>::BasePrimeField: FromLeBytesModOrder,
 {
-    adaptors: Vec<bit_adaptor::Table<Bit16ByteMac, BitGroupMac<C::ScalarField>>>,
+    adaptors: Vec<bit_adaptor::Table<AesCtr, Bit16ByteMac, BitGroupMac<C::ScalarField>>>,
     point: Affine<C>,
     // S_i = [\phi_i]P + [a • c_i]P
     s: Vec<Affine<C>>,
@@ -88,9 +88,8 @@ where
 {
     type Aux = (Affine<C>, [EndoScalar<C>; KAPPA]);
 
-    fn garble<P: PRG>(
+    fn garble(
         parent_nonce: &mut Nonce,
-        prg_unseeded: &P::Unseeded,
         rng: &mut StdRng,
         aux: Option<&Self::Aux>,
         input_mac_key: &InputMacKey<C>,
@@ -100,20 +99,21 @@ where
 
         // Adaptor tables for the scalar
         let phi = C::ScalarField::rand(rng);
-        let (adaptors, input_mac_key): (Vec<_>, Vec<_>) = input_mac_key
-            .iter()
-            .map(|bit_mac_key| {
-                bit_adaptor::Table::<Bit16ByteMac, BitGroupMac<C::ScalarField>>::garble::<P>(
-                    &mut nonce,
-                    prg_unseeded,
-                    rng,
-                    Some(&phi),
-                    bit_mac_key,
-                )
-            })
-            .collect();
 
-        let input_mac_key: group::DigitMacKey<C::ScalarField> = input_mac_key.into();
+        let mut adaptors = Vec::with_capacity(input_mac_key.len());
+        let mut adapted_mac_key = Vec::with_capacity(input_mac_key.len());
+
+        input_mac_key.iter().for_each(|bit_mac_key| {
+            let (table, mac_key) = bit_adaptor::Table::<
+                AesCtr,
+                Bit16ByteMac,
+                BitGroupMac<C::ScalarField>,
+            >::garble(&mut nonce, rng, Some(&phi), bit_mac_key);
+            adaptors.push(table);
+            adapted_mac_key.push(mac_key);
+        });
+
+        let input_mac_key: group::DigitMacKey<C::ScalarField> = adapted_mac_key.into();
         let input_mac_key: GroupMacKey<C::ScalarField> = (&input_mac_key).into();
 
         let a = input_mac_key.phi;
@@ -145,10 +145,9 @@ where
         )
     }
 
-    fn evaluate<P: PRG>(
+    fn evaluate(
         &self,
         parent_nonce: &mut Nonce,
-        prg_unseeded: &P::Unseeded,
         input: &Input<C>,
         input_mac: &InputMac<C>,
     ) -> (Output<C>, OutputMac<C, KAPPA>) {
@@ -159,11 +158,7 @@ where
             .iter()
             .zip(input.to_bits().iter())
             .zip(input_mac.iter())
-            .map(|((adaptor, input), input_mac)| {
-                adaptor
-                    .evaluate::<P>(&mut nonce, prg_unseeded, input, input_mac)
-                    .1
-            })
+            .map(|((adaptor, input), input_mac)| adaptor.evaluate(&mut nonce, input, input_mac).1)
             .collect();
 
         let input_mac: group::DigitMac<C::ScalarField> = input_mac.into();
@@ -183,8 +178,9 @@ where
 
 #[test]
 fn test_scalar_mul_fixed() {
-    use crate::{garble::pairing::KAPPA_B, mac::MacKey, utils::prg::aes_ctr::clear_set};
-    use aes::Aes128;
+    use crate::{
+        garble::groth16_verifier::KAPPA_B, mac::MacKey, utils::aes_hash::aes_ctr::clear_set,
+    };
     use ark_bn254::{Fr, G1Projective, g1::Config};
     use ark_std::rand::SeedableRng;
     use std::ops::Mul;
@@ -192,7 +188,6 @@ fn test_scalar_mul_fixed() {
     const SEED: u64 = 0;
 
     let mut rng = StdRng::seed_from_u64(SEED);
-    let unseeded_prg = Aes128::init(&[]);
 
     let point = G1Projective::rand(&mut rng);
     let input = Fr::rand(&mut rng);
@@ -205,9 +200,8 @@ fn test_scalar_mul_fixed() {
         .unwrap_or_else(|_| panic!());
 
     let input_mac = input_mac_key.encode(&input);
-    let (circuit, output_mac_key) = Table::garble::<Aes128>(
+    let (circuit, output_mac_key) = Table::garble(
         &mut Nonce::new(),
-        &unseeded_prg,
         &mut rng,
         Some(&(point.into_affine(), phis)),
         &input_mac_key,
@@ -216,9 +210,7 @@ fn test_scalar_mul_fixed() {
 
     let expected_output_mac = output_mac_key.encode(&point.mul(input).into_affine());
 
-    let output_mac = circuit
-        .evaluate::<Aes128>(&mut Nonce::new(), &unseeded_prg, &input, &input_mac)
-        .1;
+    let output_mac = circuit.evaluate(&mut Nonce::new(), &input, &input_mac).1;
     clear_set();
 
     assert!(output_mac == expected_output_mac);

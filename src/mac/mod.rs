@@ -6,7 +6,7 @@ use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::{RngCore, rngs::StdRng};
 use derive_more::Deref;
 
-use crate::{garble::Nonce, utils::prg::PRG};
+use crate::{garble::Nonce, utils::aes_hash::Hash};
 
 pub(crate) mod binary;
 pub(crate) mod bit;
@@ -36,19 +36,19 @@ pub trait RandomFromPhi<V, M>: MacKey<V, M> {
     fn random_from_phi(rng: &mut StdRng, phi: &Self::Phi) -> Self;
 }
 
-pub trait Encrypt<Message> {
+pub trait Encrypt<H: Hash, Message> {
     type Ciphertext: CanonicalDeserialize + CanonicalSerialize;
 
-    fn encrypt<P: PRG>(
+    fn encrypt(
         &self,
-        prg_unseeded: &P::Unseeded,
+        dst: Option<&[u8]>,
         parent_nonce: &mut Nonce,
         message: &Message,
     ) -> Self::Ciphertext;
 
-    fn decrypt<P: PRG>(
+    fn decrypt(
         &self,
-        prg_unseeded: &P::Unseeded,
+        dst: Option<&[u8]>,
         parent_nonce: &mut Nonce,
         ciphertext: &Self::Ciphertext,
     ) -> Message;

@@ -31,14 +31,14 @@ use ark_bn254::Fr;
 use ark_std::rand::{SeedableRng, rngs::StdRng};
 
 use crate::{
-    garble::{Circuit, bit_adaptor},
+    garble::{Circuit, bit_adaptor, groth16_verifier::GID},
     mac::{
         IdentityMac, IdentityMacKey, MacKey, Random, RandomFromPhi,
         bit::bytes::{Bit16ByteMac, Bit16ByteMacKey},
         digit::bytes::{DigitMac, DigitMacKey},
     },
     utils::{
-        PRG,
+        aes_hash::aes_ctr::AesCtr,
         bits::{FromBits, NumBits, ToBits},
     },
 };
@@ -52,9 +52,10 @@ where
 {
     zero_mac: Bit16ByteMac,
     one_mac: Bit16ByteMac,
-    adaptors: Vec<bit_adaptor::Table<Bit16ByteMac, Bit16ByteMac>>,
+    adaptors: Vec<bit_adaptor::Table<AesCtr, Bit16ByteMac, Bit16ByteMac>>,
     gates: Vec<gate::Table>,
     enc_s: Fq,
+    gid: GID,
     _marker: PhantomData<F>,
 }
 
@@ -62,17 +63,16 @@ impl<F> Circuit<F, DigitMac<F>, Fq, IdentityMac<Fq>> for Table<F>
 where
     F: PrimeField + FromBits<F, F> + Random + ToBits + NumBits,
 {
-    type Aux = Fq;
+    type Aux = (Fq, GID);
 
-    fn garble<P: PRG>(
+    fn garble(
         parent_nonce: &mut crate::garble::Nonce,
-        prg_unseeded: &P::Unseeded,
         rng: &mut ark_std::rand::prelude::StdRng,
-        aux: Option<&Fq>,
+        aux: Option<&Self::Aux>,
         input_mac_key: &DigitMacKey<F>,
     ) -> (Self, IdentityMacKey) {
         let mut nonce = parent_nonce.fork();
-        let secret = aux.unwrap();
+        let (secret, gid) = aux.unwrap();
 
         let mut phi = [0; 16];
         rng.fill_bytes(&mut phi);
@@ -86,13 +86,7 @@ where
             input_mac_key
                 .iter()
                 .map(|input_mac_key| {
-                    bit_adaptor::Table::garble::<P>(
-                        &mut nonce,
-                        prg_unseeded,
-                        rng,
-                        Some(&phi),
-                        input_mac_key,
-                    )
+                    bit_adaptor::Table::garble(&mut nonce, rng, Some(&phi), input_mac_key)
                 })
                 .collect()
         };
@@ -112,7 +106,7 @@ where
                 };
 
                 let (gate, mac_key) =
-                    gate::Table::garble::<P>(&mut nonce, prg_unseeded, rng, None, &input_mac_key);
+                    gate::Table::garble(&mut nonce, rng, Some(gid), &input_mac_key);
 
                 output_mac_key = mac_key;
 
@@ -121,8 +115,7 @@ where
 
         let enc_s = {
             let mac_false = output_mac_key.encode(&false);
-            let xof = P::seed(prg_unseeded, &mac_false);
-            let pad: Fq = xof.hash_to_field(&nonce);
+            let pad: Fq = AesCtr::hash_to_field(*mac_false, &nonce);
 
             *secret + pad
         };
@@ -133,16 +126,16 @@ where
             adaptors: adaptors.0,
             gates,
             enc_s,
+            gid: *gid,
             _marker: PhantomData,
         };
 
         (table, IdentityMacKey)
     }
 
-    fn evaluate<P: PRG>(
+    fn evaluate(
         &self,
         parent_nonce: &mut crate::garble::Nonce,
-        prg_unseeded: &P::Unseeded,
         input: &F,
         input_mac: &DigitMac<F>,
     ) -> (Fq, IdentityMac<Fq>) {
@@ -157,7 +150,7 @@ where
             .zip(input_bits.iter())
             .zip(input_mac.iter())
             .for_each(|((adaptor, input), input_mac)| {
-                let mac = adaptor.evaluate::<P>(&mut nonce, prg_unseeded, input, input_mac);
+                let mac = adaptor.evaluate(&mut nonce, input, input_mac);
                 x_mac.push(mac);
             });
 
@@ -180,16 +173,14 @@ where
                     a: output_mac,
                 };
 
-                let (res, res_mac) =
-                    gate.evaluate::<P>(&mut nonce, prg_unseeded, &input, &input_mac);
+                let (res, res_mac) = gate.evaluate(&mut nonce, &input, &input_mac);
 
                 output = res;
                 output_mac = res_mac;
             });
 
         let secret = {
-            let xof = P::seed(prg_unseeded, &output_mac);
-            let pad: Fq = xof.hash_to_field(&nonce);
+            let pad: Fq = AesCtr::hash_to_field(*output_mac, &nonce);
             self.enc_s - pad
         };
 
@@ -202,35 +193,36 @@ fn less_than<F>(secret: Fq, input: &F) -> Fq
 where
     F: PrimeField + FromBits<F, F> + Random + ToBits + NumBits,
 {
-    use aes::Aes128;
-
-    use crate::{garble::Nonce, mac::digit::DigitMacKey, utils::prg::aes_ctr::clear_set};
+    use crate::{
+        garble::Nonce,
+        mac::digit::DigitMacKey,
+        utils::aes_hash::{
+            aes_ctr::clear_set as aes_ctr_clear_set, aes_mitccr::clear_set as aes_mitccr_clear_set,
+        },
+    };
 
     const SEED: u64 = 0;
 
     let mut rng = StdRng::seed_from_u64(SEED);
-    // FIXME use TCCR for this
-    let prg_unseeded = Aes128::init(&[]);
+
+    let gid = GID::random(&mut rng);
 
     let input_mac_key = DigitMacKey::<F, Bit16ByteMac>::random_key(&mut rng);
     let input_mac = input_mac_key.encode(input);
 
-    let table = Table::<F>::garble::<Aes128>(
+    let table = Table::<F>::garble(
         &mut Nonce::new(),
-        &prg_unseeded,
         &mut rng,
-        Some(&secret),
+        Some(&(secret, gid)),
         &input_mac_key,
     )
     .0;
+    aes_ctr_clear_set();
+    aes_mitccr_clear_set();
 
-    clear_set();
-
-    let output = table
-        .evaluate::<Aes128>(&mut Nonce::new(), &prg_unseeded, input, &input_mac)
-        .0;
-
-    clear_set();
+    let output = table.evaluate(&mut Nonce::new(), input, &input_mac).0;
+    aes_ctr_clear_set();
+    aes_mitccr_clear_set();
 
     output
 }

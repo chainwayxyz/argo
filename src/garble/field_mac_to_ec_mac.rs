@@ -22,7 +22,6 @@ use crate::{
     utils::{
         bits::{FromBits, NumBits, ToBits},
         group::FromLeBytesModOrder,
-        prg::PRG,
     },
 };
 
@@ -54,9 +53,8 @@ where
 {
     type Aux = (bool, OutputMacKey<Config, KAPPA>);
 
-    fn garble<P: PRG>(
+    fn garble(
         parent_nonce: &mut Nonce,
-        prg_unseeded: &P::Unseeded,
         rng: &mut StdRng,
         aux: Option<&Self::Aux>,
         input_mac_key: &InputMacKey<F>,
@@ -168,34 +166,21 @@ where
             let a = F::rand(rng);
 
             // Scale z coordinate by `a`
-            let z_table = biquadratic::Table::garble::<P>(
-                &mut nonce,
-                prg_unseeded,
-                rng,
-                Some(&z_aux(key, a)),
-                input_mac_key,
-            )
-            .0;
+            let z_table =
+                biquadratic::Table::garble(&mut nonce, rng, Some(&z_aux(key, a)), input_mac_key).0;
             z.push(z_table);
 
             // Scale x coordinate by a^2
             let a2 = a.square();
-            let x_table = biquadratic::Table::garble::<P>(
-                &mut nonce,
-                prg_unseeded,
-                rng,
-                Some(&x_aux(key, a2)),
-                input_mac_key,
-            )
-            .0;
+            let x_table =
+                biquadratic::Table::garble(&mut nonce, rng, Some(&x_aux(key, a2)), input_mac_key).0;
             x.push(x_table);
 
             if *is_full {
                 // Scale y coordinate by a^3
                 let a3 = a2 * a;
-                let y_table = biquadratic::Table::garble::<P>(
+                let y_table = biquadratic::Table::garble(
                     &mut nonce,
-                    prg_unseeded,
                     rng,
                     Some(&y_aux(key, a3)),
                     input_mac_key,
@@ -216,10 +201,9 @@ where
         )
     }
 
-    fn evaluate<P: PRG>(
+    fn evaluate(
         &self,
         parent_nonce: &mut Nonce,
-        prg_unseeded: &P::Unseeded,
         input: &Input<Config::BaseField>,
         input_mac: &InputMac<Config::BaseField>,
     ) -> (Affine<Config>, OutputMac<Config, KAPPA>) {
@@ -240,20 +224,14 @@ where
             .zip(self.z.iter())
             .enumerate()
             .for_each(|(idx, (x_table, z_table))| {
-                let z_table = z_table
-                    .evaluate::<P>(&mut nonce, prg_unseeded, input, input_mac)
-                    .0;
+                let z_table = z_table.evaluate(&mut nonce, input, input_mac).0;
                 zs.push(z_table);
 
-                let x_table = x_table
-                    .evaluate::<P>(&mut nonce, prg_unseeded, input, input_mac)
-                    .0;
+                let x_table = x_table.evaluate(&mut nonce, input, input_mac).0;
                 xs.push(x_table);
 
                 if self.is_full {
-                    let y_table = y[idx]
-                        .evaluate::<P>(&mut nonce, prg_unseeded, input, input_mac)
-                        .0;
+                    let y_table = y[idx].evaluate(&mut nonce, input, input_mac).0;
                     ys.push(y_table);
                 }
             });
@@ -301,14 +279,14 @@ where
     <C::BaseField as Field>::BasePrimeField: FromLeBytesModOrder,
     EndoMacKey<C>: RandomFromPhi<Affine<C>, EndoMac<C>>,
 {
-    use crate::{garble::pairing::KAPPA_B, mac::MacKey, utils::prg::aes_ctr::clear_set};
-    use aes::Aes128;
+    use crate::{
+        garble::groth16_verifier::KAPPA_B, mac::MacKey, utils::aes_hash::aes_ctr::clear_set,
+    };
     use ark_std::{UniformRand, rand::SeedableRng};
 
     const SEED: u64 = 0;
 
     let mut rng = StdRng::seed_from_u64(SEED);
-    let unseeded_prg = Aes128::init(&[]);
 
     let input_mac_key = InputMacKey::random_key(&mut rng);
     let output_mac_key = OutputMacKey::<_, KAPPA_B>::random_key(&mut rng);
@@ -321,9 +299,8 @@ where
     let output = input_point;
     let output_mac = output_mac_key.encode(&output);
 
-    let garbling_table = Table::garble::<Aes128>(
+    let garbling_table = Table::garble(
         &mut Nonce::new(),
-        &unseeded_prg,
         &mut rng,
         Some(&(is_full, output_mac_key)),
         &input_mac_key,
@@ -332,7 +309,7 @@ where
     clear_set();
 
     let evaluated_output = garbling_table
-        .evaluate::<Aes128>(&mut Nonce::new(), &unseeded_prg, &input, &input_mac)
+        .evaluate(&mut Nonce::new(), &input, &input_mac)
         .1;
     clear_set();
 

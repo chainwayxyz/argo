@@ -16,6 +16,7 @@ use lazy_static::lazy_static;
 use num_bigint::BigInt;
 
 use crate::{
+    garble::groth16_verifier::{KAPPA_A, KAPPA_B},
     mac::{
         Mac, MacKey,
         endo::{
@@ -36,10 +37,6 @@ lazy_static! {
     pub static ref R_MUL_COFACTOR_GENERATOR: Affine<g2::Config> = (Affine::get_point_from_x_unchecked(Fq2::ONE, true).unwrap().mul_bigint(Fr::MODULUS)).into();
 }
 
-// KAPPA_B is 1 + log_7(2^128)
-pub(crate) const KAPPA_B: usize = 46 + 1;
-// KAPPA_A is ceil(log_7(r))
-pub(crate) const KAPPA_A: usize = 92;
 // This works only up to KAPPA_B = 65;
 pub(crate) const GENERATOR_EXPONENT: usize = 3;
 
@@ -313,40 +310,50 @@ impl Table {
             output_ks
         };
 
-        let A_mac_key = A_phis
-            .iter()
+        let mut A_mac_key = vec![EndoMacKey::default(); KAPPA_A];
+        A_mac_key
+            .iter_mut()
+            .zip(A_phis.iter())
             .zip(A_ks.iter())
-            .map(|(phi, &k)| EndoMacKey {
-                phi: phi.clone(),
-                k,
-            })
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap_or_else(|_| panic!());
+            .for_each(|((mac_key, phi), k)| {
+                *mac_key = EndoMacKey {
+                    phi: phi.clone(),
+                    k: *k,
+                };
+            });
 
-        let B_mac_key: [EndoMacKey<g2::Config>; KAPPA_B] = B_phis
-            .iter()
+        let mut B_mac_key = vec![EndoMacKey::default(); KAPPA_B];
+        B_mac_key
+            .iter_mut()
+            .zip(B_phis.iter())
             .zip(B_ks.iter())
-            .map(|(phi, &k)| EndoMacKey {
-                phi: phi.clone(),
-                k,
-            })
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap_or_else(|_| panic!());
+            .for_each(|((mac_key, phi), k)| {
+                *mac_key = EndoMacKey {
+                    phi: phi.clone(),
+                    k: *k,
+                };
+            });
 
-        let output_mac_key = B_phis
-            .iter()
+        let mut output_mac_key = vec![EndoMultGroupMacKey::default(); KAPPA_B];
+        output_mac_key
+            .iter_mut()
+            .zip(B_phis.iter())
             .zip(output_ks.iter())
-            .map(|(phi, &k)| EndoMultGroupMacKey {
-                phi: phi.clone().into(),
-                k,
-            })
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap_or_else(|_| panic!());
+            .for_each(|((mac_key, phi), k)| {
+                *mac_key = EndoMultGroupMacKey {
+                    phi: phi.clone().into(),
+                    k: *k,
+                };
+            });
 
-        ((A_mac_key, B_mac_key), output_mac_key, rs)
+        (
+            (
+                A_mac_key.try_into().unwrap_or_else(|_| panic!()),
+                B_mac_key.try_into().unwrap_or_else(|_| panic!()),
+            ),
+            output_mac_key.try_into().unwrap_or_else(|_| panic!()),
+            rs,
+        )
     }
 }
 

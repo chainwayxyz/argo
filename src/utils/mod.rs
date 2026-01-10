@@ -6,9 +6,8 @@ pub(crate) mod bits;
 /// Group operations
 pub(crate) mod group;
 
-/// Pseudo-random generator
-pub(crate) mod prg;
-pub use prg::PRG;
+/// Hash function used in half-gates
+pub(crate) mod aes_hash;
 
 /// Serialization and deserialization
 pub(crate) mod serde;

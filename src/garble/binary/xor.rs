@@ -13,7 +13,6 @@ use crate::{
         binary::{BinaryInput, BinaryInputMac, BinaryInputMacKey, BitMac, BitMacKey, Xor},
         bit::bytes::Bit16ByteMacKey,
     },
-    utils::PRG,
 };
 
 pub(crate) type InputMacKey = BinaryInputMacKey<Xor>;
@@ -53,9 +52,8 @@ pub(crate) struct Table;
 impl Circuit<Input, InputMac, bool, OutputMac> for Table {
     type Aux = ();
 
-    fn garble<P: PRG>(
+    fn garble(
         _parent_nonce: &mut Nonce,
-        _prg_unseeded: &P::Unseeded,
         _rng: &mut StdRng,
         _aux: Option<&Self::Aux>,
         input_mac_key: &<BinaryInputMac<Xor> as Mac<BinaryInput<Xor>>>::Key,
@@ -63,10 +61,9 @@ impl Circuit<Input, InputMac, bool, OutputMac> for Table {
         (Self, input_mac_key.output_mac_key())
     }
 
-    fn evaluate<P: PRG>(
+    fn evaluate(
         &self,
         _parent_nonce: &mut Nonce,
-        _prg_unseeded: &P::Unseeded,
         input: &BinaryInput<Xor>,
         input_mac: &BinaryInputMac<Xor>,
     ) -> (bool, OutputMac) {
@@ -78,30 +75,19 @@ impl Circuit<Input, InputMac, bool, OutputMac> for Table {
 #[test]
 fn test_xor_circuit() {
     use crate::mac::MacKey;
-    use aes::Aes128;
     use ark_std::rand::SeedableRng;
 
     const SEED: u64 = 0;
 
     let mut rng = StdRng::seed_from_u64(SEED);
-    let unseeded_prg = Aes128::init(&[]);
 
     let input = InputMac::random_input(&mut rng);
     let input_mac_key = InputMacKey::random_key(&mut rng);
     let output_mac_key = input_mac_key.output_mac_key();
     let input_mac = input_mac_key.encode(&input);
 
-    let circuit = Table::garble::<Aes128>(
-        &mut Nonce::new(),
-        &unseeded_prg,
-        &mut rng,
-        None,
-        &input_mac_key,
-    )
-    .0;
-    let output_mac = circuit
-        .evaluate::<Aes128>(&mut Nonce::new(), &unseeded_prg, &input, &input_mac)
-        .1;
+    let circuit = Table::garble(&mut Nonce::new(), &mut rng, None, &input_mac_key).0;
+    let output_mac = circuit.evaluate(&mut Nonce::new(), &input, &input_mac).1;
 
     let output = input.xor();
     let expected_output_mac = output_mac_key.encode(&output);

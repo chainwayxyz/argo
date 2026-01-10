@@ -7,67 +7,38 @@ pub(crate) mod group;
 
 use std::fmt::Debug;
 
-use ark_ff::Field;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 
 use crate::{
-    garble::Nonce,
-    mac::{
-        Encrypt, Mac, MacKey, Random,
-        bit::{
-            bytes::{Bit16ByteMac, Bit16ByteMacKey},
-            group::BitGroupMac,
-        },
-        group::GroupMacKey,
-    },
-    utils::{group::FromLeBytesModOrder, prg::PRG},
+    garble::{Nonce, groth16_verifier::GID},
+    mac::{Encrypt, Mac, Random},
+    utils::aes_hash::Hash,
 };
 
 #[derive(CanonicalSerialize, CanonicalDeserialize, Debug)]
-pub(crate) struct Table<InputMac, OutputMac>(
-    pub(crate) <InputMac as Encrypt<OutputMac>>::Ciphertext,
-)
+pub(crate) struct Table<H: Hash, InputMac, OutputMac>
 where
-    InputMac: Mac<bool> + Encrypt<OutputMac>,
+    InputMac: Mac<bool> + Encrypt<H, OutputMac>,
     OutputMac: Mac<bool>,
-    InputMac::Key: DeriveOutputMacKey<bool, bool, InputMac, OutputMac>,
-    <InputMac as Encrypt<OutputMac>>::Ciphertext: Debug;
+    InputMac::Key: DeriveOutputMacKey<H, bool, bool, InputMac, OutputMac>,
+    <InputMac as Encrypt<H, OutputMac>>::Ciphertext: Debug,
+{
+    gid: Option<GID>,
+    pub(crate) ciphertext: <InputMac as Encrypt<H, OutputMac>>::Ciphertext,
+}
 
-pub(crate) trait DeriveOutputMacKey<Input, Output, InputMac, OutputMac>
+pub(crate) trait DeriveOutputMacKey<H: Hash, Input, Output, InputMac, OutputMac>
 where
     InputMac: Mac<Input>,
     OutputMac: Mac<Output>,
 {
-    type Phi;
+    /// Phi of output MAC key
+    type Phi: Random;
 
-    fn derive_output_mac_key<P: PRG>(
+    fn derive_output_mac_key(
         &self,
-        prg_unseeded: &P::Unseeded,
+        dst: Option<&[u8; 16]>,
         parent_nonce: &Nonce,
         phi: &Self::Phi,
     ) -> OutputMac::Key;
-}
-
-/// Given an input_mac_key: Bit16ByteMacKey and a group element phi: G,
-/// derive an output_mac_key: GroupMacKey with s.t.
-/// - output_mac_key.phi = phi, and
-/// - output_mac_key.k = hash(input_mac_key.encode(false)).
-impl<G> DeriveOutputMacKey<bool, bool, Bit16ByteMac, BitGroupMac<G>> for Bit16ByteMacKey
-where
-    G: Field + Random,
-    G::BasePrimeField: FromLeBytesModOrder,
-{
-    type Phi = G;
-
-    fn derive_output_mac_key<P: PRG>(
-        &self,
-        prg_unseeded: &P::Unseeded,
-        parent_nonce: &Nonce,
-        phi: &G,
-    ) -> GroupMacKey<G> {
-        let mac = self.encode(&false);
-        let k = P::seed(prg_unseeded, &mac).hash_to_field(parent_nonce);
-
-        GroupMacKey { phi: *phi, k }
-    }
 }
