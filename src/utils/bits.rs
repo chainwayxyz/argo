@@ -7,7 +7,7 @@ lazy_static! {
     static ref ALPHA: Fq2 = Fq2::from_base_prime_field_elems([Fq::ZERO, Fq::ONE]).unwrap();
 }
 
-pub(crate) trait FromBits<B, V> {
+pub trait FromBits<B, V> {
     /// Takes a bit representation where each bit is encoded as a value in `B`,
     /// and composes it to reconstruct a value in `V`.
     fn from_bits<I: DoubleEndedIterator<Item = B> + ExactSizeIterator>(bits: I) -> V;

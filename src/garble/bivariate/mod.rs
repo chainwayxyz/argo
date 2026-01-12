@@ -40,7 +40,7 @@ pub(crate) mod curve_membership;
 
 /// Bivariate input (x, y)
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Input<F> {
+pub struct Input<F> {
     pub(crate) x: F,
     pub(crate) y: F,
 }
@@ -67,13 +67,13 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct InputMac<F> {
+pub struct InputMac<F> {
     pub(crate) x: bytes::DigitMac<F>,
     pub(crate) y: bytes::DigitMac<F>,
 }
 
 #[derive(Clone)]
-pub(crate) struct InputMacKey<F> {
+pub struct InputMacKey<F> {
     pub(crate) x: bytes::DigitMacKey<F>,
     pub(crate) y: bytes::DigitMacKey<F>,
 }

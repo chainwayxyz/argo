@@ -1,10 +1,10 @@
 //! Utility methods
 
 /// Bit composition and bitwise operations
-pub(crate) mod bits;
+pub mod bits;
 
 /// Group operations
-pub(crate) mod group;
+pub mod group;
 
 /// Hash function used in half-gates
 pub(crate) mod aes_hash;

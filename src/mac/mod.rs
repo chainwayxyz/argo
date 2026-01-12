@@ -11,7 +11,7 @@ use crate::{garble::Nonce, utils::aes_hash::Hash};
 pub(crate) mod binary;
 pub(crate) mod bit;
 pub(crate) mod digit;
-pub(crate) mod endo;
+pub mod endo;
 pub(crate) mod group;
 
 pub trait Mac<Value>: Sized {
@@ -55,7 +55,7 @@ pub trait Encrypt<H: Hash, Message> {
 }
 
 #[derive(Deref, Clone)]
-pub(crate) struct IteratedMac<Value, M: Mac<Value>, const N: usize> {
+pub struct IteratedMac<Value, M: Mac<Value>, const N: usize> {
     #[deref]
     pub(crate) value: Box<[M; N]>,
     _marker: PhantomData<Value>,

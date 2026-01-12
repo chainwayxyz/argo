@@ -40,3 +40,7 @@ debug-assertions = false
 [[bench]]
 name = "groth16_verifier"
 harness = false
+
+[[bench]]
+name = "field_mac_to_ec_mac"
+harness = false

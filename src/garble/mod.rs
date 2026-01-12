@@ -4,10 +4,10 @@ use crate::mac::Mac;
 
 pub(crate) mod binary;
 pub(crate) mod bit_adaptor;
-pub(crate) mod bivariate;
+pub mod bivariate;
 pub(crate) mod conditional_reveal;
 pub(crate) mod digit_adaptor;
-pub(crate) mod field_mac_to_ec_mac;
+pub mod field_mac_to_ec_mac;
 pub(crate) mod g2_subgroup_check;
 pub mod groth16_verifier;
 pub(crate) mod pairing;

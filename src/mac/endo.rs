@@ -21,7 +21,7 @@ use crate::{
 pub(crate) const ENDO_SIZE: usize = 7;
 
 #[derive(Clone, Copy)]
-pub(crate) enum EndoScalar<G> {
+pub enum EndoScalar<G> {
     Zero(PhantomData<G>),
     One(PhantomData<G>),
     Two(PhantomData<G>),
@@ -294,7 +294,7 @@ where
 #[derive(
     Clone, Copy, PartialEq, CanonicalSerialize, CanonicalDeserialize, Default, From, Deref,
 )]
-pub(crate) struct EndoMac<G: GLVConfig>(Affine<G>);
+pub struct EndoMac<G: GLVConfig>(Affine<G>);
 
 impl<G: GLVConfig> Neg for EndoMac<G> {
     type Output = Self;
@@ -322,7 +322,7 @@ where
 }
 
 #[derive(Clone, Copy, Default)]
-pub(crate) struct EndoMacKey<G: GLVConfig> {
+pub struct EndoMacKey<G: GLVConfig> {
     pub(crate) phi: EndoScalar<G>,
     pub(crate) k: Affine<G>,
 }

@@ -5,6 +5,11 @@
 //!
 //! This is generic over inputs in Fq and Fq2.
 
+#[cfg(test)]
+use ark_bn254::Fq;
+#[cfg(test)]
+use crate::garble::groth16_verifier::{KAPPA_A, KAPPA_B};
+
 use ark_ec::{AffineRepr, scalar_mul::glv::GLVConfig, short_weierstrass::Affine};
 use ark_ff::{Field, batch_inversion};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
@@ -27,10 +32,10 @@ use crate::{
 
 pub(crate) type Output<Config> = Affine<Config>;
 pub(crate) type OutputMac<Config, const KAPPA: usize> = IteratedEndoMac<Config, KAPPA>;
-pub(crate) type OutputMacKey<Config, const KAPPA: usize> = [EndoMacKey<Config>; KAPPA];
+pub type OutputMacKey<Config, const KAPPA: usize> = [EndoMacKey<Config>; KAPPA];
 
 #[derive(CanonicalSerialize, CanonicalDeserialize)]
-pub(crate) struct Table<C, const KAPPA: usize>
+pub struct Table<C, const KAPPA: usize>
 where
     C: GLVConfig,
     C::BaseField: Field + NumBits + FromBits<bool, C::BaseField> + Random,
@@ -267,7 +272,7 @@ where
 }
 
 #[cfg(test)]
-fn test_field_mac_to_ec_mac<C>(is_full: bool)
+fn test_field_mac_to_ec_mac<C, const KAPPA: usize>(is_full: bool, seed: u64)
 where
     C: GLVConfig + Clone,
     C::BaseField: Field
@@ -280,16 +285,14 @@ where
     EndoMacKey<C>: RandomFromPhi<Affine<C>, EndoMac<C>>,
 {
     use crate::{
-        garble::groth16_verifier::KAPPA_B, mac::MacKey, utils::aes_hash::aes_ctr::clear_set,
+        mac::MacKey, utils::aes_hash::aes_ctr::clear_set,
     };
     use ark_std::{UniformRand, rand::SeedableRng};
 
-    const SEED: u64 = 0;
-
-    let mut rng = StdRng::seed_from_u64(SEED);
+    let mut rng = StdRng::seed_from_u64(seed);
 
     let input_mac_key = InputMacKey::random_key(&mut rng);
-    let output_mac_key = OutputMacKey::<_, KAPPA_B>::random_key(&mut rng);
+    let output_mac_key = OutputMacKey::<_, KAPPA>::random_key(&mut rng);
 
     let input_point = Affine::<C>::rand(&mut rng);
 
@@ -326,12 +329,103 @@ where
 
 #[test]
 fn test_field_mac_to_ec_mac_g1() {
-    test_field_mac_to_ec_mac::<ark_bn254::g1::Config>(true);
-    test_field_mac_to_ec_mac::<ark_bn254::g1::Config>(false);
+    for seed in 0..5 {
+        test_field_mac_to_ec_mac::<ark_bn254::g1::Config, KAPPA_A>(true, seed);
+    }
+    for seed in 0..5 {
+        test_field_mac_to_ec_mac::<ark_bn254::g1::Config, KAPPA_B>(false, seed);
+    }
 }
 
 #[test]
 fn test_field_mac_to_ec_mac_g2() {
-    test_field_mac_to_ec_mac::<ark_bn254::g2::Config>(true);
-    test_field_mac_to_ec_mac::<ark_bn254::g2::Config>(false);
+    for seed in 0..5 {
+        test_field_mac_to_ec_mac::<ark_bn254::g2::Config, KAPPA_B>(false, seed);
+    }
+}
+
+#[cfg(test)]
+// Roundtrip serialisation and deserialisation of the table.
+fn test_serde_roundtrip<C, const KAPPA: usize>(name: &String, is_full: bool)
+where
+    C: GLVConfig + Clone,
+    C::BaseField: Field<BasePrimeField = Fq>
+        + NumBits
+        + FromBits<bool, C::BaseField>
+        + Random
+        + ToBits
+        + FromBits<C::BaseField, C::BaseField>,
+    EndoMacKey<C>: RandomFromPhi<Affine<C>, EndoMac<C>>,
+{
+    use crate::{
+        garble::{Circuit, Nonce},
+        mac::MacKey,
+        utils::aes_hash::aes_ctr::clear_set,
+    };
+    use ark_ff::UniformRand;
+    use ark_std::rand::{SeedableRng, rngs::StdRng};
+    use std::fs::File;
+    use std::io::{BufReader, BufWriter, Write};
+
+    const SEED: u64 = 0;
+
+    let mut rng = StdRng::seed_from_u64(SEED);
+
+    let input_point = Affine::<C>::rand(&mut rng);
+    let input = input_point.into();
+
+    let input_mac_key = InputMacKey::random_key(&mut rng);
+    let output_mac_key = OutputMacKey::<_, KAPPA>::random_key(&mut rng);
+
+    let original_table = Table::<C, KAPPA>::garble(
+        &mut Nonce::new(),
+        &mut rng,
+        Some(&(is_full, output_mac_key)),
+        &input_mac_key,
+    )
+    .0;
+    clear_set();
+
+    let input_mac = input_mac_key.encode(&input);
+
+    let original_output = original_table
+        .evaluate(&mut Nonce::new(), &input, &input_mac)
+        .0;
+    clear_set();
+
+    std::fs::create_dir_all("bin").expect("Could not create directory /bin");
+    let file_name = "bin/".to_owned() + name + ".bin";
+    let file = File::create(&file_name).expect("Could not create file");
+    let mut writer = BufWriter::new(file);
+    original_table.serialize_compressed(&mut writer).unwrap();
+    writer.flush().unwrap();
+
+    drop(original_table);
+
+    let file = File::open(&file_name).expect("Could not open file");
+    let mut reader = BufReader::new(file);
+    let deserialised_table = Table::<C, KAPPA>::deserialize_compressed(&mut reader)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        .unwrap();
+    let deserialised_output = deserialised_table
+        .evaluate(&mut Nonce::new(), &input, &input_mac)
+        .0;
+    clear_set();
+
+    assert_eq!(original_output, deserialised_output);
+}
+
+#[test]
+fn test_A_serde_roundtrip() {
+    test_serde_roundtrip::<ark_bn254::g1::Config, KAPPA_A>(&"A_field_to_ec_mac".to_string(), true);
+}
+
+#[test]
+fn test_B_serde_roundtrip() {
+    test_serde_roundtrip::<ark_bn254::g2::Config, KAPPA_B>(&"B_field_to_ec_mac".to_string(), false);
+}
+
+#[test]
+fn test_C_serde_roundtrip() {
+    test_serde_roundtrip::<ark_bn254::g1::Config, KAPPA_B>(&"C_field_to_ec_mac".to_string(), false);
 }
