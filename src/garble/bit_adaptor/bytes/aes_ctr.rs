@@ -12,7 +12,7 @@ use crate::{
         Encrypt, MacKey,
         bit::bytes::{Bit16ByteMac, Bit16ByteMacKey},
     },
-    utils::aes_hash::{AES_BLOCK_SIZE, Hash, aes_ctr::AesCtr},
+    utils::aes_hash::{Hash, aes_ctr::AesCtr},
 };
 
 impl<Mac1, Mac2> Encrypt<AesCtr, Mac1> for Mac2
@@ -31,14 +31,14 @@ where
         let seed: Bit16ByteMac = self.clone().into();
         let message: Bit16ByteMac = message.clone().into();
 
-        let mut ciphertext = AesCtr::hash(&*seed, &parent_nonce.bytes());
+        let mut ciphertext = AesCtr::hash(&seed, &parent_nonce.bytes());
 
         ciphertext
             .iter_mut()
             .zip(message.iter())
             .for_each(|(pad, msg)| *pad ^= msg);
 
-        ciphertext.try_into().unwrap()
+        ciphertext
     }
 
     fn decrypt(
@@ -49,14 +49,14 @@ where
     ) -> Mac1 {
         let seed: Bit16ByteMac = self.clone().into();
 
-        let mut plaintext = AesCtr::hash(&*seed, &parent_nonce.bytes());
+        let mut plaintext = AesCtr::hash(&seed, &parent_nonce.bytes());
 
         plaintext
             .iter_mut()
             .zip(ciphertext.iter())
             .for_each(|(pad, ciphertext)| *pad ^= ciphertext);
 
-        Bit16ByteMac(plaintext.try_into().unwrap()).into()
+        Bit16ByteMac(plaintext).into()
     }
 }
 
@@ -70,7 +70,7 @@ impl DeriveOutputMacKey<AesCtr, bool, bool, Bit16ByteMac, Bit16ByteMac> for Bit1
         phi: &Self::Phi,
     ) -> Bit16ByteMacKey {
         let mac = self.encode(&false);
-        let k: [u8; 16] = AesCtr::hash(&*mac, &nonce.bytes()).try_into().unwrap();
+        let k = AesCtr::hash(&*mac, &nonce.bytes());
 
         Self { phi: *phi, k }
     }
@@ -133,16 +133,14 @@ impl Circuit<bool, Bit16ByteMac, bool, Bit16ByteMac> for Table<AesCtr, Bit16Byte
             //                  phi * 0 + k = k;
             // but since output_mac_key.k = hash(input_mac_key.encode(false)),
             // we can directly derive `k` by hashing the `input_mac`.
-            let hash: [u8; AES_BLOCK_SIZE] = AesCtr::hash(&**input_mac, &parent_nonce.bytes())
-                .try_into()
-                .unwrap();
+            let hash = AesCtr::hash(&input_mac, &parent_nonce.bytes());
             hash.into()
         } else {
             // If the input is `true`, we have to decrypt the table entry
             // using the `input_mac` as a key, to recover the plaintext
             // `output_mac`.
             <Bit16ByteMac as Encrypt<AesCtr, Bit16ByteMac>>::decrypt(
-                &input_mac,
+                input_mac,
                 None,
                 parent_nonce,
                 &self.ciphertext,

@@ -124,7 +124,7 @@ impl Table {
         // Garbling table to check that `B` is in the G2 subgroup.
         // This table leaks `secret` if `B` is not in the G2 subgroup.
         let b_g2_check =
-            g2_subgroup_check::Table::garble(parent_nonce, rng, Some(&secret), &b_ec_mac_key).0;
+            g2_subgroup_check::Table::garble(parent_nonce, rng, Some(secret), b_ec_mac_key).0;
 
         let c_range_check = [&input_mac_key.C.x, &input_mac_key.C.y]
             .iter()

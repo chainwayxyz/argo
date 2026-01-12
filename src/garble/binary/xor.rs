@@ -4,7 +4,6 @@ use std::marker::PhantomData;
 
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::rngs::StdRng;
-use serde::{Deserialize, Serialize};
 
 use crate::{
     garble::{Circuit, Nonce},
@@ -46,7 +45,7 @@ impl InputMacKey {
     }
 }
 
-#[derive(Debug, Clone, CanonicalSerialize, CanonicalDeserialize, Serialize, Deserialize)]
+#[derive(Debug, Clone, CanonicalSerialize, CanonicalDeserialize)]
 pub(crate) struct Table;
 
 impl Circuit<Input, InputMac, bool, OutputMac> for Table {

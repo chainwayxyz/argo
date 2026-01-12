@@ -141,7 +141,7 @@ where
             let nonce = parent_nonce.fork();
 
             // Get the output for this block counter.
-            let block = AesCtr::hash(&**self, &nonce.bytes());
+            let block = AesCtr::hash(self, &nonce.bytes());
 
             // Copy the output block to the ciphertext.
             ciphertext.extend_from_slice(&block);
@@ -176,7 +176,7 @@ where
         // Recover the one-time pad used to encrypt the ciphertext.
         (0..num_blocks).for_each(|_| {
             let nonce = parent_nonce.fork();
-            let block = AesCtr::hash(&**self, &nonce.bytes());
+            let block = AesCtr::hash(self, &nonce.bytes());
             plaintext.extend_from_slice(&block);
         });
 

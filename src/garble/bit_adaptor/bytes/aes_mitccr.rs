@@ -66,7 +66,7 @@ where
             .for_each(|((key, dst), nonce)| *key = dst ^ nonce);
 
         let mut plaintext = [0; 16];
-        let pad = AesMiTCCR::hash(&key, &*input_mac);
+        let pad = AesMiTCCR::hash(&key, &input_mac);
 
         plaintext
             .iter_mut()
@@ -88,7 +88,7 @@ impl DeriveOutputMacKey<AesMiTCCR, bool, bool, Bit16ByteMac, Bit16ByteMac> for B
         phi: &Self::Phi,
     ) -> Bit16ByteMacKey {
         let mac = self.encode(&false);
-        let k: [u8; 16] = AesMiTCCR::hash(&dst.unwrap(), &*mac).try_into().unwrap();
+        let k: [u8; 16] = AesMiTCCR::hash(dst.unwrap(), &mac).try_into().unwrap();
 
         Self { phi: *phi, k }
     }
@@ -174,15 +174,14 @@ impl Circuit<bool, Bit16ByteMac, bool, Bit16ByteMac>
             //                  phi * 0 + k = k;
             // but since output_mac_key.k = hash(input_mac_key.encode(false)),
             // we can directly derive `k` by hashing the `input_mac`.
-            let hash: [u8; AES_BLOCK_SIZE] =
-                AesMiTCCR::hash(&dst, &**input_mac).try_into().unwrap();
+            let hash = AesMiTCCR::hash(&dst, &input_mac);
             hash.into()
         } else {
             // If the input is `true`, we have to decrypt the table entry
             // using the `input_mac` as a key, to recover the plaintext
             // `output_mac`.
             <Bit16ByteMac as Encrypt<AesMiTCCR, Bit16ByteMac>>::decrypt(
-                &input_mac,
+                input_mac,
                 Some(&dst),
                 parent_nonce,
                 &self.ciphertext,

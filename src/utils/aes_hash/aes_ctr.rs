@@ -1,14 +1,14 @@
+use std::cell::RefCell;
 #[cfg(test)]
-use std::{cell::RefCell, collections::BTreeSet};
-use std::{collections::BTreeMap, sync::Mutex};
+use std::collections::{BTreeMap, BTreeSet};
 
 use aes::{
     Aes128, Block,
     cipher::{BlockEncrypt, KeyInit},
 };
+use ahash::AHashMap;
 use ark_ec::AdditiveGroup;
 use ark_ff::{Field, PrimeField};
-use once_cell::sync::Lazy;
 
 use crate::{
     garble::Nonce,
@@ -18,30 +18,32 @@ use crate::{
     },
 };
 
-static AES_CTRS: Lazy<Mutex<BTreeMap<[u8; AES_BLOCK_SIZE], Aes128>>> =
-    Lazy::new(|| Mutex::new(BTreeMap::new()));
+thread_local! {
+    static AES_INSTANCES: RefCell<AHashMap<[u8; 16], Aes128>> =
+            RefCell::new(AHashMap::default());
+}
 
 #[derive(Debug)]
 pub(crate) struct AesCtr;
 
 impl Hash for AesCtr {
+    #[inline(always)]
     fn hash(key: &[u8; 16], msg: &[u8; 16]) -> [u8; 16] {
-        let xof = AES_CTRS
-            .lock()
-            .unwrap()
-            .entry(*key)
-            .or_insert_with(|| Aes128::new(key.into()))
-            .clone();
+        let mut block = Block::from(*msg);
 
-        let mut block: Block = (*msg).into();
-        xof.encrypt_block(&mut block);
+        AES_INSTANCES.with(|map| {
+            map.borrow_mut()
+                .entry(*key)
+                .or_insert_with(|| Aes128::new(key.into()))
+                .encrypt_block(&mut block);
+        });
 
         #[cfg(test)]
         {
             // Check that each counter is used only once per key.
             // We cannot extract the key from the hasher, so use counter 0 value instead
             let mut zero_block = Block::default();
-            xof.encrypt_block(&mut zero_block);
+            Aes128::new(key.into()).encrypt_block(&mut zero_block);
             assert!(COUNTERS_SET.with(|map| {
                 map.borrow_mut()
                     .entry(zero_block.into())

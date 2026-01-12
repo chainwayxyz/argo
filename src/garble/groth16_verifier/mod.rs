@@ -157,7 +157,7 @@ pub fn garble_groth16(
         &mut nonce,
         &mut rng,
         Some(&(secret, gid, verifier_key)),
-        &input_mac_key,
+        input_mac_key,
     )
     .0;
 
