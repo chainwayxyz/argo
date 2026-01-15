@@ -6,9 +6,9 @@
 //! This is generic over inputs in Fq and Fq2.
 
 #[cfg(test)]
-use ark_bn254::Fq;
-#[cfg(test)]
 use crate::garble::groth16_verifier::{KAPPA_A, KAPPA_B};
+#[cfg(test)]
+use ark_bn254::Fq;
 
 use ark_ec::{AffineRepr, scalar_mul::glv::GLVConfig, short_weierstrass::Affine};
 use ark_ff::{Field, batch_inversion};
@@ -284,9 +284,7 @@ where
     <C::BaseField as Field>::BasePrimeField: FromLeBytesModOrder,
     EndoMacKey<C>: RandomFromPhi<Affine<C>, EndoMac<C>>,
 {
-    use crate::{
-        mac::MacKey, utils::aes_hash::aes_ctr::clear_set,
-    };
+    use crate::{mac::MacKey, utils::aes_hash::aes_ctr::clear_set};
     use ark_std::{UniformRand, rand::SeedableRng};
 
     let mut rng = StdRng::seed_from_u64(seed);

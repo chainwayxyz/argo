@@ -19,10 +19,18 @@ lazy_static! {
 fn to_u64_array<const N: usize>(bytes: &[u8]) -> [u64; N] {
     let mut result = [0u64; N];
 
-    for (i, chunk) in bytes.chunks(8).take(N).enumerate() {
-        let mut u64_bytes = [0u8; 8];
-        u64_bytes[..chunk.len()].copy_from_slice(chunk);
-        result[i] = u64::from_le_bytes(u64_bytes);
+    for i in 0..N {
+        let offset = i * 8;
+        if offset + 8 <= bytes.len() {
+            // Fast path: read full u64
+            result[i] = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
+        } else if offset < bytes.len() {
+            // Slow path: partial bytes
+            let remaining = bytes.len() - offset;
+            let mut u64_bytes = [0u8; 8];
+            u64_bytes[..remaining].copy_from_slice(&bytes[offset..]);
+            result[i] = u64::from_le_bytes(u64_bytes);
+        }
     }
 
     result
@@ -34,6 +42,7 @@ pub trait FromLeBytesModOrder {
 
 impl FromLeBytesModOrder for Fq {
     /// Optimized implementation of from_le_bytes_mod_order for Bn254::Fq
+    #[inline(always)]
     fn from_le_bytes_mod_order(bytes: &[u8]) -> Fq {
         let num_modulus_bytes = Fq::MODULUS_BIT_SIZE.div_ceil(8) as usize;
         let num_bytes_to_directly_convert = ark_std::cmp::min(num_modulus_bytes - 1, bytes.len());
@@ -65,6 +74,7 @@ impl FromLeBytesModOrder for Fq {
 
 impl FromLeBytesModOrder for Fr {
     /// Optimized implementation of from_le_bytes_mod_order for Bn254::Fr
+    #[inline(always)]
     fn from_le_bytes_mod_order(bytes: &[u8]) -> Fr {
         let num_modulus_bytes = Fr::MODULUS_BIT_SIZE.div_ceil(8) as usize;
         let num_bytes_to_directly_convert = ark_std::cmp::min(num_modulus_bytes - 1, bytes.len());

@@ -1,3 +1,4 @@
+use aes::{Block, cipher::BlockEncrypt};
 use ark_ff::{BigInteger, Field, PrimeField};
 use ark_std::rand::rngs::StdRng;
 
@@ -15,7 +16,7 @@ use crate::{
         group::GroupMacKey,
     },
     utils::{
-        aes_hash::{AES_BLOCK_SIZE, Hash, aes_ctr::AesCtr},
+        aes_hash::{AES_BLOCK_SIZE, aes_ctr::AesCtr},
         group::FromLeBytesModOrder,
     },
 };
@@ -131,36 +132,41 @@ where
         message: &BitGroupMac<G>,
     ) -> Self::Ciphertext {
         let num_blocks = AesCtr::num_blocks::<G>();
+        let total_bytes = num_blocks * AES_BLOCK_SIZE;
 
-        // Initialise the ciphertext as an empty vector with the desired
-        // number of AES blocks.
-        let mut ciphertext = Vec::with_capacity(num_blocks * AES_BLOCK_SIZE);
+        // Single allocation with exact size
+        let mut ciphertext = vec![0u8; total_bytes];
 
-        (0..num_blocks).for_each(|_| {
-            // Use a new block counter for each block.
+        let aes = AesCtr::get_instance(&**self);
+
+        // Generate keystream directly into buffer
+        for i in 0..num_blocks {
             let nonce = parent_nonce.fork();
+            let mut block = Block::from(nonce.bytes());
+            aes.encrypt_block(&mut block);
 
-            // Get the output for this block counter.
-            let block = AesCtr::hash(self, &nonce.bytes());
+            let start = i * AES_BLOCK_SIZE;
+            ciphertext[start..start + AES_BLOCK_SIZE].copy_from_slice(&block);
+        }
 
-            // Copy the output block to the ciphertext.
-            ciphertext.extend_from_slice(&block);
-        });
+        // XOR message bytes directly without intermediate allocation
+        let mut offset = 0;
+        for elem in message.to_base_prime_field_elements() {
+            let bytes = elem.into_bigint().to_bytes_le();
+            let end = (offset + bytes.len()).min(ciphertext.len());
 
-        // Get the byte representation of the output_mac group element.
-        let message_bytes = message
-            .to_base_prime_field_elements()
-            .flat_map(|elem| elem.into_bigint().to_bytes_le());
+            for i in offset..end {
+                ciphertext[i] ^= bytes[i - offset];
+            }
 
-        // Encrypt the message using the ciphertext as a one-time pad.
-        ciphertext
-            .iter_mut()
-            .zip(message_bytes)
-            .for_each(|(pad, msg)| *pad ^= msg);
+            offset = end;
+            if offset >= ciphertext.len() {
+                break;
+            }
+        }
 
         ciphertext
     }
-
     fn decrypt(
         &self,
         _dst: Option<&[u8]>,
@@ -173,10 +179,15 @@ where
         // number of AES blocks.
         let mut plaintext = Vec::with_capacity(num_blocks * AES_BLOCK_SIZE);
 
+        let aes = AesCtr::get_instance(&**self);
+
         // Recover the one-time pad used to encrypt the ciphertext.
         (0..num_blocks).for_each(|_| {
             let nonce = parent_nonce.fork();
-            let block = AesCtr::hash(self, &nonce.bytes());
+
+            let mut block = Block::from(nonce.bytes());
+            aes.encrypt_block(&mut block);
+
             plaintext.extend_from_slice(&block);
         });
 

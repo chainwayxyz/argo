@@ -255,16 +255,19 @@ impl Table {
     ) -> (InputMacKey, OutputMacKey, Box<[Fr; KAPPA_B]>) {
         // Sample `KAPPA_B` random `r`s
         let mut rs = Box::new([Fr::ZERO; KAPPA_B]);
-        rs.iter_mut().for_each(|r| *r = Fr::rand(rng));
+        for r in rs.iter_mut() {
+            *r = Fr::rand(rng);
+        }
 
         // Sample x uniformly at random
         let x = Fr::rand(rng);
         let A_phis = Self::derive_phis_from_x(x);
 
+        // Sample A_ks_scalar directly into array
         let mut A_ks_scalar = [Fr::ZERO; KAPPA_A];
-        A_ks_scalar
-            .iter_mut()
-            .for_each(|A_k_scalar| *A_k_scalar = Fr::rand(rng));
+        for A_k_scalar in A_ks_scalar.iter_mut() {
+            *A_k_scalar = Fr::rand(rng);
+        }
 
         let A_ks = G1Projective::generator().batch_mul(&A_ks_scalar);
 
@@ -280,71 +283,67 @@ impl Table {
             assert_eq!(x, expected_x);
         }
 
-        let g2_B_ks_scalar: Vec<_> = rs.iter().map(|r| -*r * x).collect();
+        // Compute g2_B_ks_scalar in-place without intermediate Vec
+        let mut g2_B_ks_scalar = [Fr::ZERO; KAPPA_B];
+        for (i, r) in rs.iter().enumerate() {
+            g2_B_ks_scalar[i] = -*r * x;
+        }
+
         let g2_B_ks = G2Projective::generator().batch_mul(&g2_B_ks_scalar);
         let B_ks = Self::derive_b_ks(&g2_B_ks);
 
         let B_phis = EndoScalar::<g2::Config>::sample_endoscalars_with_checksum::<KAPPA_B>(rng);
 
-        let k =
-            pow_n_lincomb::<_, Fr, Fr>(A_ks_scalar, EndoScalar::<g1::Config>::two_minus_omega());
+        let k = pow_n_lincomb::<_, Fr, Fr>(
+            A_ks_scalar.iter().copied(),
+            EndoScalar::<g1::Config>::two_minus_omega(),
+        );
 
-        let output_ks = {
-            let mut powers_of_2 = Vec::with_capacity(Fr::MODULUS_BIT_SIZE as usize);
+        // Precompute powers of 2 once
+        let powers_of_2 = {
+            let mut powers = Vec::with_capacity(Fr::MODULUS_BIT_SIZE as usize);
             let mut p = TARGET_GENERATOR.0;
-            powers_of_2.push(p);
+            powers.push(p);
             for _ in 1..Fr::MODULUS_BIT_SIZE {
                 p.square_in_place();
-                powers_of_2.push(p);
+                powers.push(p);
             }
-
-            let mut output_ks = [Fq12::ZERO; KAPPA_B];
-            output_ks
-                .iter_mut()
-                .zip(rs.iter())
-                .for_each(|(output_k, r)| {
-                    let exp = (*r * k).into_bigint();
-                    *output_k = Fq12::pow_with_table(&powers_of_2, exp).unwrap();
-                });
-
-            output_ks
+            powers
         };
 
-        let mut A_mac_key = vec![EndoMacKey::default(); KAPPA_A];
-        A_mac_key
-            .iter_mut()
-            .zip(A_phis.iter())
-            .zip(A_ks.iter())
-            .for_each(|((mac_key, phi), k)| {
-                *mac_key = EndoMacKey {
-                    phi: phi.clone(),
-                    k: *k,
-                };
-            });
+        // Compute output_ks
+        let mut output_ks = [Fq12::ZERO; KAPPA_B];
+        for (output_k, r) in output_ks.iter_mut().zip(rs.iter()) {
+            let exp = (*r * k).into_bigint();
+            *output_k = Fq12::pow_with_table(&powers_of_2, exp).unwrap();
+        }
 
-        let mut B_mac_key = vec![EndoMacKey::default(); KAPPA_B];
-        B_mac_key
-            .iter_mut()
-            .zip(B_phis.iter())
-            .zip(B_ks.iter())
-            .for_each(|((mac_key, phi), k)| {
-                *mac_key = EndoMacKey {
-                    phi: phi.clone(),
-                    k: *k,
-                };
+        // Build A_mac_key efficiently with known size
+        let mut A_mac_key = Vec::with_capacity(KAPPA_A);
+        for (phi, k_val) in A_phis.iter().zip(A_ks.iter()) {
+            A_mac_key.push(EndoMacKey {
+                phi: phi.clone(),
+                k: *k_val,
             });
+        }
 
-        let mut output_mac_key = vec![EndoMultGroupMacKey::default(); KAPPA_B];
-        output_mac_key
-            .iter_mut()
-            .zip(B_phis.iter())
-            .zip(output_ks.iter())
-            .for_each(|((mac_key, phi), k)| {
-                *mac_key = EndoMultGroupMacKey {
-                    phi: phi.clone().into(),
-                    k: *k,
-                };
+        // Build B_mac_key efficiently with known size
+        let mut B_mac_key = Vec::with_capacity(KAPPA_B);
+        for (phi, k_val) in B_phis.iter().zip(B_ks.iter()) {
+            B_mac_key.push(EndoMacKey {
+                phi: phi.clone(),
+                k: *k_val,
             });
+        }
+
+        // Build output_mac_key efficiently with known size
+        let mut output_mac_key = Vec::with_capacity(KAPPA_B);
+        for (phi, k_val) in B_phis.iter().zip(output_ks.iter()) {
+            output_mac_key.push(EndoMultGroupMacKey {
+                phi: phi.clone().into(),
+                k: *k_val,
+            });
+        }
 
         (
             (

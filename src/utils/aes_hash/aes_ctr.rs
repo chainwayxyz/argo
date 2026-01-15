@@ -1,6 +1,6 @@
-use std::cell::RefCell;
 #[cfg(test)]
 use std::collections::{BTreeMap, BTreeSet};
+use std::{cell::RefCell, rc::Rc};
 
 use aes::{
     Aes128, Block,
@@ -19,24 +19,31 @@ use crate::{
 };
 
 thread_local! {
-    static AES_INSTANCES: RefCell<AHashMap<[u8; 16], Aes128>> =
-            RefCell::new(AHashMap::default());
+    static AES_INSTANCES: RefCell<AHashMap<[u8; 16], Rc<Aes128>>> =
+        RefCell::new(AHashMap::default());
 }
 
 #[derive(Debug)]
 pub(crate) struct AesCtr;
 
+impl AesCtr {
+    pub(crate) fn get_instance(key: &[u8; 16]) -> Rc<Aes128> {
+        AES_INSTANCES.with(|instances| {
+            Rc::clone(
+                instances
+                    .borrow_mut()
+                    .entry(*key)
+                    .or_insert_with(|| Rc::new(Aes128::new(&(*key).into()))),
+            )
+        })
+    }
+}
+
 impl Hash for AesCtr {
     #[inline(always)]
     fn hash(key: &[u8; 16], msg: &[u8; 16]) -> [u8; 16] {
         let mut block = Block::from(*msg);
-
-        AES_INSTANCES.with(|map| {
-            map.borrow_mut()
-                .entry(*key)
-                .or_insert_with(|| Aes128::new(key.into()))
-                .encrypt_block(&mut block);
-        });
+        Self::get_instance(key).encrypt_block(&mut block);
 
         #[cfg(test)]
         {
@@ -64,27 +71,28 @@ impl AesCtr {
     {
         let parent_nonce = &mut parent_nonce.clone();
 
-        // The user requests an element of F_p^m, comprising `m` BasePrimeField elements.
         let m = F::extension_degree() as usize;
         let mut base_prime_field_elems = vec![F::BasePrimeField::ZERO; m];
-
-        // The number of blocks required for each base prime field element
         let num_blocks_per_base_elem = LEN_PER_BASE_ELEM / AES_BLOCK_SIZE;
 
-        base_prime_field_elems.iter_mut().for_each(|elem| {
-            let mut bytes = Vec::with_capacity(LEN_PER_BASE_ELEM);
-            (0..num_blocks_per_base_elem).for_each(|_| {
-                // Fork the nonce to get a unique counter
+        let aes = AesCtr::get_instance(&value);
+
+        // Reuse a single buffer instead of allocating per element
+        let mut bytes = vec![0u8; LEN_PER_BASE_ELEM];
+
+        for elem in base_prime_field_elems.iter_mut() {
+            // Generate blocks directly into the buffer
+            for i in 0..num_blocks_per_base_elem {
                 let nonce = parent_nonce.fork();
+                let mut block = Block::from(nonce.bytes());
+                aes.encrypt_block(&mut block);
 
-                // Get the chunk of the PRG corresponding to this counter
-                let block = AesCtr::hash(&value, &nonce.bytes());
-
-                bytes.extend_from_slice(&block);
-            });
+                let start = i * AES_BLOCK_SIZE;
+                bytes[start..start + AES_BLOCK_SIZE].copy_from_slice(&block);
+            }
 
             *elem = <F::BasePrimeField as FromLeBytesModOrder>::from_le_bytes_mod_order(&bytes);
-        });
+        }
 
         F::from_base_prime_field_elems(base_prime_field_elems).unwrap()
     }
