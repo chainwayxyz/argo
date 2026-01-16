@@ -268,6 +268,7 @@ fn test_g2_subgroup_check_decoding_error() {
             EndoMacKey {
                 phi,
                 k: k.into_affine(),
+                k_scalar: None,
             }
         })
         .collect::<Vec<_>>()

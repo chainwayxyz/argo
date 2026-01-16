@@ -320,19 +320,21 @@ impl Table {
 
         // Build A_mac_key efficiently with known size
         let mut A_mac_key = Vec::with_capacity(KAPPA_A);
-        for (phi, k_val) in A_phis.iter().zip(A_ks.iter()) {
+        for ((phi, &k_scalar), &k) in A_phis.iter().zip(A_ks_scalar.iter()).zip(A_ks.iter()) {
             A_mac_key.push(EndoMacKey {
                 phi: phi.clone(),
-                k: *k_val,
+                k_scalar: Some(k_scalar),
+                k,
             });
         }
 
         // Build B_mac_key efficiently with known size
         let mut B_mac_key = Vec::with_capacity(KAPPA_B);
-        for (phi, k_val) in B_phis.iter().zip(B_ks.iter()) {
+        for ((phi, &k_scalar), &k) in B_phis.iter().zip(g2_B_ks_scalar.iter()).zip(B_ks.iter()) {
             B_mac_key.push(EndoMacKey {
                 phi: phi.clone(),
-                k: *k_val,
+                k_scalar: Some(k_scalar),
+                k,
             });
         }
 

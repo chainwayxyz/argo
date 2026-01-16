@@ -372,7 +372,9 @@ where
     let input_point = Affine::<C>::rand(&mut rng);
     let input = input_point.into();
 
+    println!("before input_mac_key");
     let input_mac_key = InputMacKey::random_key(&mut rng);
+    println!("before output_mac_key");
     let output_mac_key = OutputMacKey::<_, KAPPA>::random_key(&mut rng);
 
     let original_table = Table::<C, KAPPA>::garble(

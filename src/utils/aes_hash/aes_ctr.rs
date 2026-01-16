@@ -78,7 +78,7 @@ impl AesCtr {
         let aes = AesCtr::get_instance(&value);
 
         // Reuse a single buffer instead of allocating per element
-        let mut bytes = vec![0u8; LEN_PER_BASE_ELEM];
+        let mut bytes = [0u8; LEN_PER_BASE_ELEM];
 
         for elem in base_prime_field_elems.iter_mut() {
             // Generate blocks directly into the buffer

@@ -5,16 +5,18 @@
 
 use std::marker::PhantomData;
 
-use ark_bn254::{Bn254, Fq, Fq12, g1::Config as G1Config};
-use ark_ec::{pairing::Pairing, scalar_mul::glv::GLVConfig};
+use ark_bn254::{Fq, Fq12, g1::Config as G1Config};
+use ark_ec::{AffineRepr, CurveGroup, PrimeGroup, scalar_mul::glv::GLVConfig};
 use ark_ff::{
     AdditiveGroup, BigInteger, Field, Fp12, PrimeField, batch_inversion,
     field_hashers::{DefaultFieldHasher, HashToField},
 };
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 
+#[cfg(test)]
+use crate::garble::groth16_verifier::reset_preprocessed_vk;
 use crate::{
-    garble::groth16_verifier,
+    garble::groth16_verifier::{self, PreprocessedVerifierKey},
     mac::{
         IdentityMac, IdentityMacKey, MacKey,
         endo::{ENDO_SIZE, EndoMacKey, EndoMultGroupMacKey, EndoScalar, IteratedEndoMultGroupMac},
@@ -42,7 +44,14 @@ impl<const KAPPA: usize> Table<KAPPA> {
         c_ec_mac_key: &[EndoMacKey<G1Config>; KAPPA],
         x_G_output_mac_key: &[EndoMacKey<G1Config>; KAPPA],
     ) -> InputMacKey<KAPPA> {
-        let groth16_verifier::VerifierKey { H1, H2, c, .. } = *verifier_key;
+        let PreprocessedVerifierKey {
+            h1_target_pow_2,
+            h2_target_pow_2,
+            ..
+        } = verifier_key.preprocess();
+
+        #[cfg(test)]
+        reset_preprocessed_vk();
 
         let mut key = Vec::with_capacity(pairing_output_mac_key.len());
 
@@ -55,10 +64,48 @@ impl<const KAPPA: usize> Table<KAPPA> {
                 // All these MAC keys use the same phi
                 let phi = C.phi.clone();
 
-                let k = Bn254::multi_pairing(vec![C.k, x_G.k], vec![H1, H2]).0;
+                // e(G, H1)^{C_k_scalar}
+                let C_k_H1 =
+                    Fq12::pow_with_table(&h1_target_pow_2, C.k_scalar.unwrap().into_bigint())
+                        .unwrap();
+                assert_eq!(
+                    ark_bn254::G1Projective::generator() * C.k_scalar.unwrap(),
+                    C.k.into_group()
+                );
+
+                // e(G, H2)^{xG_k_scalar}
+                let xG_k_H2 =
+                    Fq12::pow_with_table(&h2_target_pow_2, x_G.k_scalar.unwrap().into_bigint())
+                        .unwrap();
+                assert_eq!(
+                    (ark_bn254::G1Projective::generator() * x_G.k_scalar.unwrap()).into_affine(),
+                    x_G.k
+                );
+
+                // e(C.k, H1) e(xG.k, H2)
+                let k = C_k_H1 * xG_k_H2;
+
+                #[cfg(test)]
+                {
+                    use ark_bn254::Bn254;
+                    use ark_ec::pairing::Pairing;
+
+                    assert_eq!(C_k_H1, Bn254::pairing(C.k, verifier_key.H1).0);
+                    assert_eq!(xG_k_H2, Bn254::pairing(x_G.k, verifier_key.H2).0);
+
+                    assert_eq!(
+                        k,
+                        Bn254::multi_pairing(
+                            vec![C.k, x_G.k],
+                            vec![verifier_key.H1, verifier_key.H2]
+                        )
+                        .0
+                    );
+                }
+
                 // c^{p^(2phi + 6)} = c^{-p^(2phi)}
                 // This has the effect of multiplying the MAC'd value by c
-                let c_term = phi.endo_frob(&c.inverse().unwrap());
+                let c_term = phi.endo_frob(&verifier_key.c.inverse().unwrap());
                 let k = k * AB.k * c_term;
 
                 key.push(EndoMultGroupMacKey { phi, k });
@@ -215,4 +262,41 @@ fn test_conditional_reveal_invalid() {
     let output = table.evaluate(&input, &[input_mac]).0;
 
     assert_eq!(output, secret);
+}
+
+#[test]
+fn test_preprocessed_pow_two() {
+    use crate::garble::groth16_verifier::{VerifierKey, reset_preprocessed_vk};
+    use ark_bn254::{Bn254, Fr, G1Projective, G2Projective};
+    use ark_ec::{PrimeGroup, pairing::Pairing};
+    use ark_ff::UniformRand;
+    use ark_std::rand::{SeedableRng, rngs::StdRng};
+
+    const SEED: u64 = 0;
+
+    let mut rng = StdRng::seed_from_u64(SEED);
+
+    let verifier_key = VerifierKey {
+        G1: G1Projective::rand(&mut rng),
+        H1: G2Projective::rand(&mut rng),
+        H2: G2Projective::rand(&mut rng),
+        c: Bn254::pairing(G1Projective::rand(&mut rng), G2Projective::generator()).0,
+    };
+
+    let PreprocessedVerifierKey {
+        h1_target_pow_2,
+        h2_target_pow_2,
+        ..
+    } = verifier_key.preprocess();
+
+    let scalar = Fr::rand(&mut rng);
+    let point = G1Projective::generator() * scalar;
+
+    let h1_pairing = Fq12::pow_with_table(&h1_target_pow_2, scalar.into_bigint()).unwrap();
+    assert_eq!(h1_pairing, Bn254::pairing(point, verifier_key.H1).0);
+
+    let h2_pairing = Fq12::pow_with_table(&h2_target_pow_2, scalar.into_bigint()).unwrap();
+    assert_eq!(h2_pairing, Bn254::pairing(point, verifier_key.H2).0);
+
+    reset_preprocessed_vk();
 }

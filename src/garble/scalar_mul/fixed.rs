@@ -1,6 +1,6 @@
 //! Scalar mul [x]P where x is a scalar, P is a fixed curve point
 use ark_ec::{
-    AdditiveGroup, AffineRepr, CurveConfig, CurveGroup, ScalarMul,
+    AdditiveGroup, CurveConfig, CurveGroup, PrimeGroup, ScalarMul,
     scalar_mul::glv::GLVConfig,
     short_weierstrass::{Affine, Projective},
 };
@@ -55,24 +55,28 @@ where
 {
     pub(crate) fn output_mac_key_from_phis(
         rng: &mut StdRng,
-        point: Projective<C>,
         input_mac_key: &GroupMacKey<C::ScalarField>,
         phis: &[EndoScalar<C>; KAPPA],
     ) -> OutputMacKey<C, KAPPA> {
-        let mut randomised_ks = vec![C::ScalarField::ZERO; KAPPA];
-        randomised_ks.iter_mut().for_each(|k| {
+        let point = Projective::<C>::generator();
+        let mut k_scalars = vec![C::ScalarField::ZERO; KAPPA];
+        k_scalars.iter_mut().for_each(|k| {
             let c = C::ScalarField::rand(rng);
             *k = input_mac_key.k * c
         });
-        let k = point.batch_mul(&randomised_ks);
+        let k = point.batch_mul(&k_scalars);
 
         let mut keys: Vec<EndoMacKey<C>> = Vec::with_capacity(KAPPA);
-        phis.iter().zip(k).for_each(|(phi, k)| {
-            keys.push(EndoMacKey {
-                phi: phi.clone(),
-                k,
-            })
-        });
+        phis.iter()
+            .zip(k_scalars)
+            .zip(k)
+            .for_each(|((phi, k_scalar), k)| {
+                keys.push(EndoMacKey {
+                    phi: phi.clone(),
+                    k_scalar: Some(k_scalar),
+                    k,
+                })
+            });
 
         keys.try_into().unwrap_or_else(|_| panic!())
     }
@@ -120,8 +124,7 @@ where
         let b = input_mac_key.k;
         let b_inv = b.inverse().unwrap();
 
-        let output_mac_key =
-            Self::output_mac_key_from_phis(rng, point.into_group(), &input_mac_key, phis);
+        let output_mac_key = Self::output_mac_key_from_phis(rng, &input_mac_key, phis);
 
         let t: Vec<Projective<C>> = output_mac_key.iter().map(|key| key.k.mul(b_inv)).collect();
         let t = Projective::<C>::normalize_batch(&t);

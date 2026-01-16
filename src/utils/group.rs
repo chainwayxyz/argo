@@ -1,4 +1,4 @@
-use ark_bn254::{Fq, Fr, g2};
+use ark_bn254::{Fq, Fq2, Fr, g2};
 use ark_ec::{AffineRepr, short_weierstrass::Affine};
 use ark_ff::{BigInt, BigInteger, PrimeField};
 use ark_std::rand::rngs::StdRng;
@@ -123,7 +123,6 @@ where
 }
 
 pub(crate) fn get_curve_point_not_in_g2(rng: &mut StdRng) -> Affine<g2::Config> {
-    use ark_bn254::Fq2;
     use ark_ff::UniformRand;
     use ark_std::Zero;
 

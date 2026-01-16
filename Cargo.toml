@@ -24,11 +24,12 @@ criterion = "0.7.0"
 opt-level = 3
 incremental = true
 panic = 'abort'
+lto = "thin"
+codegen-units = 1
 
 [profile.test-release]
 inherits = "release"
 opt-level = 1
-lto = "thin"
 
 [profile.bench]
 inherits = "release"

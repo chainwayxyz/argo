@@ -9,9 +9,11 @@
 pub(crate) mod input_validity;
 
 use core::panic;
+use std::sync::RwLock;
 
 use ark_bn254::{Bn254, Fq, Fq2, Fq12, Fr, G1Affine, G1Projective, G2Affine, G2Projective, g1, g2};
 use ark_ec::{AffineRepr, pairing::Pairing};
+use ark_ff::{AdditiveGroup, Field, PrimeField};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::{SeedableRng, rngs::StdRng};
 
@@ -34,6 +36,14 @@ use crate::utils::aes_hash::{
 #[cfg(test)]
 use ark_ff::UniformRand;
 
+static PREPROCESSED_VK: RwLock<Option<PreprocessedVerifierKey>> = RwLock::new(None);
+
+#[cfg(test)]
+pub(crate) fn reset_preprocessed_vk() {
+    let mut w = PREPROCESSED_VK.write().unwrap();
+    *w = None;
+}
+
 // KAPPA_B is 1 + log_7(2^128)
 pub const KAPPA_B: usize = 46 + 1;
 // KAPPA_A is ceil(log_7(r))
@@ -48,6 +58,14 @@ pub struct VerifierKey {
     pub H1: G2Projective,
     pub H2: G2Projective,
     pub c: Fq12,
+}
+
+#[derive(Copy, Clone)]
+pub struct PreprocessedVerifierKey {
+    pub h1_target: Fq12,
+    pub h2_target: Fq12,
+    pub h1_target_pow_2: [Fq12; Fr::MODULUS_BIT_SIZE as usize],
+    pub h2_target_pow_2: [Fq12; Fr::MODULUS_BIT_SIZE as usize],
 }
 
 impl VerifierKey {
@@ -65,6 +83,51 @@ impl VerifierKey {
             vec![input.B.into_group(), self.H1, self.H2],
         )
         .0 * self.c
+    }
+
+    pub(crate) fn preprocess(&self) -> PreprocessedVerifierKey {
+        {
+            if let Some(vk) = PREPROCESSED_VK.read().unwrap().as_ref() {
+                return *vk;
+            }
+        }
+
+        let preprocessed_vk = {
+            let compute_pow_2 = |value: Fq12| {
+                let mut powers = [Fq12::ZERO; Fr::MODULUS_BIT_SIZE as usize];
+                powers[0] = value;
+                for i in 1..Fr::MODULUS_BIT_SIZE as usize {
+                    powers[i] = powers[i - 1].square();
+                }
+                powers
+            };
+
+            // h1_target := e(G, H1)
+            let h1_target = Bn254::pairing(G1Affine::generator(), self.H1).0;
+
+            // h2_target := e(G, H2)
+            let h2_target = Bn254::pairing(G1Affine::generator(), self.H2).0;
+
+            // [h1_target^{2^i}]
+            let h1_target_pow_2 = compute_pow_2(h1_target);
+
+            // [h2_target^{2^i}]
+            let h2_target_pow_2 = compute_pow_2(h2_target);
+
+            PreprocessedVerifierKey {
+                h1_target,
+                h2_target,
+                h1_target_pow_2,
+                h2_target_pow_2,
+            }
+        };
+
+        PREPROCESSED_VK
+            .write()
+            .unwrap()
+            .get_or_insert(preprocessed_vk);
+
+        preprocessed_vk
     }
 }
 
@@ -381,6 +444,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
                             let AB = &AB_mac[idx];
                             let C = &c_ec_mac[idx];
                             let x_G = &x_G_mac[idx];
+                            // TODO use precomputed lines
                             let mac = (Bn254::multi_pairing(vec![**C, **x_G], vec![H1, H2]).0
                                 * **AB)
                                 .into();

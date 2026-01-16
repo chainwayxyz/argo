@@ -5,8 +5,12 @@
 
 use std::{marker::PhantomData, ops::Neg};
 
-use ark_bn254::{Fq, Fq12, g1, g2};
-use ark_ec::{AdditiveGroup, CurveGroup, scalar_mul::glv::GLVConfig, short_weierstrass::Affine};
+use ark_bn254::{Fq, Fq12, Fr, g1, g2};
+use ark_ec::{
+    AdditiveGroup, CurveGroup, PrimeGroup,
+    scalar_mul::glv::GLVConfig,
+    short_weierstrass::{Affine, Projective},
+};
 use ark_ff::{BigInt, BigInteger, CyclotomicMultSubgroup, Field, PrimeField, UniformRand};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::{Rng, rngs::StdRng};
@@ -324,6 +328,7 @@ where
 #[derive(Clone, Copy, Default)]
 pub struct EndoMacKey<G: GLVConfig> {
     pub(crate) phi: EndoScalar<G>,
+    pub(crate) k_scalar: Option<G::ScalarField>,
     pub(crate) k: Affine<G>,
 }
 
@@ -331,10 +336,12 @@ impl RandomFromPhi<Affine<g1::Config>, EndoMac<g1::Config>> for EndoMacKey<g1::C
     type Phi = EndoScalar<g1::Config>;
 
     fn random_from_phi(rng: &mut StdRng, phi: &EndoScalar<g1::Config>) -> Self {
-        let k = Affine::<g1::Config>::rand(rng);
+        let k_scalar = Fr::rand(rng);
+        let k = (Projective::<g1::Config>::generator() * k_scalar).into_affine();
 
         Self {
             phi: phi.clone(),
+            k_scalar: Some(k_scalar),
             k,
         }
     }
@@ -348,6 +355,7 @@ impl RandomFromPhi<Affine<g2::Config>, EndoMac<g2::Config>> for EndoMacKey<g2::C
 
         Self {
             phi: phi.clone(),
+            k_scalar: None,
             k,
         }
     }
@@ -469,11 +477,12 @@ fn test_gt_mac_commute() {
     let gt_point = Bn254::pairing(point, G2Affine::generator()).0;
 
     let g1_mac_key = EndoMacKey::<G>::random_key(&mut rng);
+    let k = g1_mac_key.k;
     let g1_mac = g1_mac_key.encode(&point);
 
     let gt_mac_key = EndoMultGroupMacKey {
         phi: g1_mac_key.phi,
-        k: Bn254::pairing(g1_mac_key.k, G2Affine::generator()).0,
+        k: Bn254::pairing(k, G2Affine::generator()).0,
     };
     let gt_mac = gt_mac_key.encode(&gt_point);
 
