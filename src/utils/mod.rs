@@ -9,6 +9,9 @@ pub mod group;
 /// Hash function used in half-gates
 pub(crate) mod aes_hash;
 
+/// Pairing optimisations
+pub(crate) mod pairing;
+
 /// Serialization and deserialization
 pub(crate) mod serde;
 
