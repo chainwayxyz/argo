@@ -12,7 +12,7 @@ use core::panic;
 use std::sync::RwLock;
 
 use ark_bn254::{Bn254, Fq, Fq2, Fq12, Fr, G1Affine, G1Projective, G2Affine, G2Projective, g1, g2};
-use ark_ec::{AffineRepr, CurveGroup, pairing::Pairing};
+use ark_ec::{AffineRepr, pairing::Pairing};
 use ark_ff::{AdditiveGroup, Field, PrimeField};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::{SeedableRng, rngs::StdRng};
@@ -25,10 +25,7 @@ use crate::{
         IdentityMac, IdentityMacKey, IteratedMac, Mac, MacKey, RandomFromPhi, digit,
         endo::{EndoMacKey, EndoMultGroupMac, EndoScalar},
     },
-    utils::{
-        pairing::{Line, multi_pairing, prepare_all_line_functions, prepare_g1_points},
-        parallel::MaybeParallelIter,
-    },
+    utils::parallel::MaybeParallelIter,
 };
 
 #[cfg(feature = "parallel")]
@@ -73,14 +70,6 @@ pub struct GarblePreprocessedVk {
     pub h1_target_pow_2: [Fq12; Fr::MODULUS_BIT_SIZE as usize],
     /// e(G, H2)^{2^i}
     pub h2_target_pow_2: [Fq12; Fr::MODULUS_BIT_SIZE as usize],
-}
-
-#[derive(Clone)]
-pub struct EvalPreprocessedVk {
-    /// Precomputed H1 lines for pairing
-    pub h1_lines: Line,
-    /// Precomputed H2 lines for pairing
-    pub h2_lines: Line,
 }
 
 impl VerifierKey {
@@ -141,14 +130,6 @@ impl VerifierKey {
             .get_or_insert(preprocessed_vk);
 
         preprocessed_vk
-    }
-
-    pub(crate) fn eval_preprocess(&self) -> EvalPreprocessedVk {
-        let h1_lines = prepare_all_line_functions(self.H1.into_affine());
-
-        let h2_lines = prepare_all_line_functions(self.H2.into_affine());
-
-        EvalPreprocessedVk { h1_lines, h2_lines }
     }
 }
 
@@ -414,6 +395,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
     ) -> (Output, IdentityMac<Output>) {
         // The Groth16 input (A, B, C).
         let Input { A, B, C, x } = *input;
+        let VerifierKey { H1, H2, .. } = self.verifier_key;
 
         // Evaluate the field_to_ec_mac table for `A`.
         let a_ec_mac = self
@@ -443,18 +425,8 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
 
         // Compute the pairing e(A,B) e(C, H_1) on the MACs of A, B, C
         let conditional_reveal_macs = {
-            let prepared_c_ec_mac =
-                prepare_g1_points(&c_ec_mac.iter().map(|mac| **mac).collect::<Vec<_>>());
-            let neg_prepared_c_ec_mac =
-                prepare_g1_points(&c_ec_mac.iter().map(|mac| -**mac).collect::<Vec<_>>());
-
-            let prepared_xG_mac =
-                prepare_g1_points(&x_G_mac.iter().map(|mac| **mac).collect::<Vec<_>>());
-
             let b_ec_macs = [b_ec_mac.clone(), -b_ec_mac.clone()];
-            let prepared_c_ec_macs = [prepared_c_ec_mac.clone(), neg_prepared_c_ec_mac];
-
-            let EvalPreprocessedVk { h1_lines, h2_lines } = self.verifier_key.eval_preprocess();
+            let prepared_c_ec_macs = [c_ec_mac.clone(), -c_ec_mac.clone()];
 
             b_ec_macs
                 .iter()
@@ -477,9 +449,9 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
                         (0..KAPPA_B).for_each(|idx| {
                             let AB = &AB_mac[idx];
                             let C = &c_ec_mac[idx];
-                            let x_G = &prepared_xG_mac[idx];
+                            let x_G = &x_G_mac[idx];
 
-                            let pairing = { multi_pairing(&[*C, *x_G], &[&h1_lines, &h2_lines]) };
+                            let pairing = Bn254::multi_pairing(&[**C, **x_G], &[H1, H2]);
 
                             let mac = (pairing.0 * **AB).into();
                             conditional_reveal_mac.push(mac);

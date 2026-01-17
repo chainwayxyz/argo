@@ -3,14 +3,14 @@
 /// Bit composition and bitwise operations
 pub mod bits;
 
+/// Error types
+pub mod error;
+
 /// Group operations
 pub mod group;
 
 /// Hash function used in half-gates
 pub(crate) mod aes_hash;
-
-/// Pairing optimisations
-pub(crate) mod pairing;
 
 pub(crate) mod parallel;
 
