@@ -60,7 +60,7 @@ pub(crate) fn prepare_all_line_functions(q: G2Affine) -> Line {
 
         // alpha = 3 * x^2 / 2 * y
         alpha.square_in_place();
-        let mut tmp = alpha.clone();
+        let mut tmp = alpha;
         tmp.double_in_place();
         alpha += tmp;
 
@@ -101,7 +101,7 @@ pub(crate) fn prepare_all_line_functions(q: G2Affine) -> Line {
 
     let mut l = vec![];
     let mut t = q;
-    let q_negated = -q.clone();
+    let q_negated = -q;
 
     for i in (1..SIX_X_PLUS_2_NAF.len()).rev() {
         let (alpha, mu) = line_double(t);
@@ -135,11 +135,11 @@ pub(crate) fn prepare_all_line_functions(q: G2Affine) -> Line {
 
     let (alpha, mu) = line_add(t, pi_1_q);
     add_assign_mixed_with_alpha(&mut t, &pi_1_q, alpha);
-    l.push((alpha.into(), mu.into()));
+    l.push((alpha, mu));
 
     let (alpha, mu) = line_add(t, pi_2_q);
     add_assign_mixed_with_alpha(&mut t, &pi_2_q, alpha);
-    l.push((alpha.into(), mu.into()));
+    l.push((alpha, mu));
 
     l
 }

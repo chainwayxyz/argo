@@ -137,7 +137,7 @@ where
         // Single allocation with exact size
         let mut ciphertext = vec![0u8; total_bytes];
 
-        let aes = AesCtr::get_instance(&**self);
+        let aes = AesCtr::get_instance(self);
 
         // Generate keystream directly into buffer
         for i in 0..num_blocks {
@@ -179,7 +179,7 @@ where
         // number of AES blocks.
         let mut plaintext = Vec::with_capacity(num_blocks * AES_BLOCK_SIZE);
 
-        let aes = AesCtr::get_instance(&**self);
+        let aes = AesCtr::get_instance(self);
 
         // Recover the one-time pad used to encrypt the ciphertext.
         (0..num_blocks).for_each(|_| {

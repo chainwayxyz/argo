@@ -19,17 +19,17 @@ lazy_static! {
 fn to_u64_array<const N: usize>(bytes: &[u8]) -> [u64; N] {
     let mut result = [0u64; N];
 
-    for i in 0..N {
+    for (i, word) in result.iter_mut().enumerate() {
         let offset = i * 8;
         if offset + 8 <= bytes.len() {
             // Fast path: read full u64
-            result[i] = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
+            *word = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
         } else if offset < bytes.len() {
             // Slow path: partial bytes
             let remaining = bytes.len() - offset;
             let mut u64_bytes = [0u8; 8];
             u64_bytes[..remaining].copy_from_slice(&bytes[offset..]);
-            result[i] = u64::from_le_bytes(u64_bytes);
+            *word = u64::from_le_bytes(u64_bytes);
         }
     }
 

@@ -70,7 +70,7 @@ impl DeriveOutputMacKey<AesCtr, bool, bool, Bit16ByteMac, Bit16ByteMac> for Bit1
         phi: &Self::Phi,
     ) -> Bit16ByteMacKey {
         let mac = self.encode(&false);
-        let k = AesCtr::hash(&*mac, &nonce.bytes());
+        let k = AesCtr::hash(&mac, &nonce.bytes());
 
         Self { phi: *phi, k }
     }
@@ -133,7 +133,7 @@ impl Circuit<bool, Bit16ByteMac, bool, Bit16ByteMac> for Table<AesCtr, Bit16Byte
             //                  phi * 0 + k = k;
             // but since output_mac_key.k = hash(input_mac_key.encode(false)),
             // we can directly derive `k` by hashing the `input_mac`.
-            let hash = AesCtr::hash(&input_mac, &parent_nonce.bytes());
+            let hash = AesCtr::hash(input_mac, &parent_nonce.bytes());
             hash.into()
         } else {
             // If the input is `true`, we have to decrypt the table entry

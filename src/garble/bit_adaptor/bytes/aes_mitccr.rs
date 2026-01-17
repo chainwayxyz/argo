@@ -40,7 +40,7 @@ where
             .for_each(|((key, dst), nonce)| *key = dst ^ nonce);
 
         let mut ciphertext = [0; 16];
-        let pad = AesMiTCCR::hash(&key, &*input_mac);
+        let pad = AesMiTCCR::hash(&key, &input_mac);
 
         ciphertext
             .iter_mut()
@@ -88,7 +88,7 @@ impl DeriveOutputMacKey<AesMiTCCR, bool, bool, Bit16ByteMac, Bit16ByteMac> for B
         phi: &Self::Phi,
     ) -> Bit16ByteMacKey {
         let mac = self.encode(&false);
-        let k: [u8; 16] = AesMiTCCR::hash(dst.unwrap(), &mac).try_into().unwrap();
+        let k: [u8; 16] = AesMiTCCR::hash(dst.unwrap(), &mac);
 
         Self { phi: *phi, k }
     }
