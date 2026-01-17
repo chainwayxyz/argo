@@ -25,8 +25,14 @@ use crate::{
         IdentityMac, IdentityMacKey, IteratedMac, Mac, MacKey, RandomFromPhi, digit,
         endo::{EndoMacKey, EndoMultGroupMac, EndoScalar},
     },
-    utils::pairing::{Line, multi_pairing, prepare_all_line_functions, prepare_g1_points},
+    utils::{
+        pairing::{Line, multi_pairing, prepare_all_line_functions, prepare_g1_points},
+        parallel::MaybeParallelIter,
+    },
 };
+
+#[cfg(feature = "parallel")]
+use rayon::iter::ParallelIterator;
 
 #[cfg(test)]
 use crate::mac::Random;
@@ -436,7 +442,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         let conditional_reveal_input = self.verifier_key.pairing(input);
 
         // Compute the pairing e(A,B) e(C, H_1) on the MACs of A, B, C
-        let conditional_reveal_macs: Vec<IteratedMac<Fq12, EndoMultGroupMac, KAPPA_B>> = {
+        let conditional_reveal_macs = {
             let prepared_c_ec_mac =
                 prepare_g1_points(&c_ec_mac.iter().map(|mac| **mac).collect::<Vec<_>>());
             let neg_prepared_c_ec_mac =
@@ -448,12 +454,18 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
             let b_ec_macs = [b_ec_mac.clone(), -b_ec_mac.clone()];
             let prepared_c_ec_macs = [prepared_c_ec_mac.clone(), neg_prepared_c_ec_mac];
 
-            let mut macs = Vec::with_capacity(KAPPA_B);
-
             let EvalPreprocessedVk { h1_lines, h2_lines } = self.verifier_key.eval_preprocess();
 
-            b_ec_macs.iter().for_each(|b_ec_mac| {
-                prepared_c_ec_macs.iter().for_each(|c_ec_mac| {
+            b_ec_macs
+                .iter()
+                .flat_map(|b_ec_mac| {
+                    prepared_c_ec_macs
+                        .iter()
+                        .map(move |c_ec_mac| (b_ec_mac.clone(), c_ec_mac.clone()))
+                })
+                .collect::<Vec<_>>()
+                .maybe_par_iter() // or collect and then par_iter
+                .map(|(b_ec_mac, c_ec_mac)| {
                     // Evaluate the pairing of (A, B)
                     let AB_mac = self
                         .pairing
@@ -477,11 +489,11 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
                             .unwrap_or_else(|_| panic!())
                     };
 
-                    macs.push(conditional_reveal_mac.into())
+                    let mac: IteratedMac<Fq12, EndoMultGroupMac, KAPPA_B> =
+                        conditional_reveal_mac.into();
+                    mac
                 })
-            });
-
-            macs
+                .collect::<Vec<_>>()
         };
 
         // Evaluate the conditional reveal circuit.

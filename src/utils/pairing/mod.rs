@@ -144,6 +144,8 @@ pub(crate) fn prepare_all_line_functions(q: G2Affine) -> Line {
     l
 }
 
+// we "prepare" p by recomputing (x, y) -> (x', y') where: x' = - p.x / p.y; y' = -1 /p.y
+// it is required to enforce that in c0c3c4, c0 = 1
 pub(crate) fn prepare_g1_points(points: &[G1Affine]) -> Vec<G1Affine> {
     let mut y_invs = points.iter().map(|p| p.y).collect::<Vec<_>>();
     batch_inversion(&mut y_invs);
@@ -158,16 +160,6 @@ pub(crate) fn prepare_g1_points(points: &[G1Affine]) -> Vec<G1Affine> {
             G1Affine::new_unchecked(x, y)
         })
         .collect()
-}
-
-fn prepare_g1_point(p: G1Affine) -> G1Affine {
-    // we "prepare" p by recomputing (x, y) -> (x', y') where: x' = - p.x / p.y; y' = -1 /p.y
-    // it is required to enforce that in c0c3c4, c0 = 1
-    let y_new = -p.y.inverse().unwrap();
-    let mut x_new = p.x;
-    x_new *= y_new;
-
-    G1Affine::new_unchecked(x_new, y_new)
 }
 
 fn miller_loop_with_prepared_lines(eval_points: &[G1Affine], lines: &[&Line]) -> Fq12 {

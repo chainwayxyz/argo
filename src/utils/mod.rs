@@ -12,6 +12,8 @@ pub(crate) mod aes_hash;
 /// Pairing optimisations
 pub(crate) mod pairing;
 
+pub(crate) mod parallel;
+
 /// Serialization and deserialization
 pub(crate) mod serde;
 
