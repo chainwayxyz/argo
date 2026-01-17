@@ -16,7 +16,7 @@ use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 #[cfg(test)]
 use crate::garble::groth16_verifier::reset_preprocessed_vk;
 use crate::{
-    garble::groth16_verifier::{self, PreprocessedVerifierKey},
+    garble::groth16_verifier::{self, GarblePreprocessedVk},
     mac::{
         IdentityMac, IdentityMacKey, MacKey,
         endo::{ENDO_SIZE, EndoMacKey, EndoMultGroupMacKey, EndoScalar, IteratedEndoMultGroupMac},
@@ -44,11 +44,11 @@ impl<const KAPPA: usize> Table<KAPPA> {
         c_ec_mac_key: &[EndoMacKey<G1Config>; KAPPA],
         x_G_output_mac_key: &[EndoMacKey<G1Config>; KAPPA],
     ) -> InputMacKey<KAPPA> {
-        let PreprocessedVerifierKey {
+        let GarblePreprocessedVk {
             h1_target_pow_2,
             h2_target_pow_2,
             ..
-        } = verifier_key.preprocess();
+        } = verifier_key.garble_preprocess();
 
         #[cfg(test)]
         reset_preprocessed_vk();
@@ -283,11 +283,11 @@ fn test_preprocessed_pow_two() {
         c: Bn254::pairing(G1Projective::rand(&mut rng), G2Projective::generator()).0,
     };
 
-    let PreprocessedVerifierKey {
+    let GarblePreprocessedVk {
         h1_target_pow_2,
         h2_target_pow_2,
         ..
-    } = verifier_key.preprocess();
+    } = verifier_key.garble_preprocess();
 
     let scalar = Fr::rand(&mut rng);
     let point = G1Projective::generator() * scalar;

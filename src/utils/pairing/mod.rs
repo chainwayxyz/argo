@@ -1,13 +1,21 @@
 //! Adapted from https://github.com/matter-labs/zksync-crypto/blob/main/crates/pairing/src/bn254/pairing_certificate.rs
 //! to work with arkworks types
 
-use ark_bn254::{Fq2, Fq12, G1Affine, G2Affine};
-use ark_ff::{AdditiveGroup, Field, One};
+use ark_bn254::{Bn254, Fq2, Fq12, G1Affine, G2Affine};
+use ark_ec::pairing::{MillerLoopOutput, Pairing, PairingOutput};
+use ark_ff::{AdditiveGroup, Field, One, batch_inversion};
 
 mod constants;
 use constants::*;
 
-pub fn double_with_alpha(value: &mut G2Affine, alpha: Fq2) {
+pub type Line = Vec<(Fq2, Fq2)>;
+
+pub fn multi_pairing(g1_points: &[G1Affine], g2_lines: &[&Line]) -> PairingOutput<Bn254> {
+    let miller_loop_f = miller_loop_with_prepared_lines(g1_points, g2_lines);
+    Bn254::final_exponentiation(MillerLoopOutput(miller_loop_f)).unwrap()
+}
+
+fn double_with_alpha(value: &mut G2Affine, alpha: Fq2) {
     //x_r = alpha^2 - 2 * x
     let mut x_r = alpha;
     x_r.square_in_place();
@@ -24,7 +32,7 @@ pub fn double_with_alpha(value: &mut G2Affine, alpha: Fq2) {
     value.y = y_r;
 }
 
-pub fn add_assign_mixed_with_alpha(value: &mut G2Affine, other: &G2Affine, alpha: Fq2) {
+fn add_assign_mixed_with_alpha(value: &mut G2Affine, other: &G2Affine, alpha: Fq2) {
     let x1 = value.x;
     let y1 = value.y;
     let x2 = other.x;
@@ -45,7 +53,7 @@ pub fn add_assign_mixed_with_alpha(value: &mut G2Affine, other: &G2Affine, alpha
     value.y = y_r;
 }
 
-pub fn prepare_all_line_functions(q: G2Affine) -> Vec<(Fq2, Fq2)> {
+pub(crate) fn prepare_all_line_functions(q: G2Affine) -> Line {
     fn line_double(t: G2Affine) -> (Fq2, Fq2) {
         let mut alpha = t.x;
         let mut mu = t.y;
@@ -136,7 +144,23 @@ pub fn prepare_all_line_functions(q: G2Affine) -> Vec<(Fq2, Fq2)> {
     l
 }
 
-pub fn prepare_g1_point(p: G1Affine) -> G1Affine {
+pub(crate) fn prepare_g1_points(points: &[G1Affine]) -> Vec<G1Affine> {
+    let mut y_invs = points.iter().map(|p| p.y).collect::<Vec<_>>();
+    batch_inversion(&mut y_invs);
+
+    let ys = y_invs.iter().map(|&y| -y);
+
+    points
+        .iter()
+        .zip(ys)
+        .map(|(p, y)| {
+            let x = p.x * y;
+            G1Affine::new_unchecked(x, y)
+        })
+        .collect()
+}
+
+fn prepare_g1_point(p: G1Affine) -> G1Affine {
     // we "prepare" p by recomputing (x, y) -> (x', y') where: x' = - p.x / p.y; y' = -1 /p.y
     // it is required to enforce that in c0c3c4, c0 = 1
     let y_new = -p.y.inverse().unwrap();
@@ -146,10 +170,7 @@ pub fn prepare_g1_point(p: G1Affine) -> G1Affine {
     G1Affine::new_unchecked(x_new, y_new)
 }
 
-pub fn miller_loop_with_prepared_lines(
-    eval_points: &[G1Affine],
-    lines: &[Vec<(Fq2, Fq2)>],
-) -> Fq12 {
+fn miller_loop_with_prepared_lines(eval_points: &[G1Affine], lines: &[&Line]) -> Fq12 {
     assert_eq!(eval_points.len(), lines.len());
 
     fn line_evaluation(alpha: &Fq2, mu: &Fq2, p: &G1Affine) -> (Fq2, Fq2, Fq2) {
@@ -215,25 +236,26 @@ pub fn miller_loop_with_prepared_lines(
 
 #[test]
 fn test_precomputed_lines() {
-    use ark_bn254::{Bn254, G1Affine, G2Affine};
-    use ark_ec::pairing::{MillerLoopOutput, Pairing};
     use ark_ff::UniformRand;
     use ark_std::rand::{SeedableRng, rngs::StdRng};
 
     const SEED: u64 = 0;
     let mut rng = StdRng::seed_from_u64(SEED);
 
-    let p = G1Affine::rand(&mut rng);
-    let q = G2Affine::rand(&mut rng);
+    let g1_points = [G1Affine::rand(&mut rng), G1Affine::rand(&mut rng)];
+    let g2_points = [G2Affine::rand(&mut rng), G2Affine::rand(&mut rng)];
 
-    let res = Bn254::miller_loop(&p, &q);
-    let lhs = Bn254::final_exponentiation(res);
+    let lhs = Bn254::multi_pairing(&g1_points, &g2_points);
 
-    let lines = prepare_all_line_functions(q);
-    let p_prepared = prepare_g1_point(p);
+    let g1_points: Vec<_> = g1_points.into_iter().map(prepare_g1_point).collect();
 
-    let miller_loop_f = miller_loop_with_prepared_lines(&[p_prepared], &[lines]);
-    let rhs = Bn254::final_exponentiation(MillerLoopOutput(miller_loop_f));
+    let g2_lines: Vec<_> = g2_points
+        .into_iter()
+        .map(prepare_all_line_functions)
+        .collect();
+    let g2_lines: Vec<&Vec<_>> = g2_lines.iter().collect();
+
+    let rhs = multi_pairing(&g1_points, &g2_lines);
 
     assert_eq!(lhs, rhs);
 }
