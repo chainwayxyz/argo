@@ -12,8 +12,6 @@ pub mod group;
 /// Hash function used in half-gates
 pub(crate) mod aes_hash;
 
-pub(crate) mod parallel;
-
 /// Serialization and deserialization
 pub(crate) mod serde;
 

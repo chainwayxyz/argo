@@ -16,6 +16,7 @@ use ark_ec::{AffineRepr, pairing::Pairing};
 use ark_ff::{AdditiveGroup, Field, PrimeField};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::{SeedableRng, rngs::StdRng};
+use rayon::iter::{ParallelBridge, ParallelIterator};
 
 use crate::{
     garble::{
@@ -25,11 +26,7 @@ use crate::{
         IdentityMac, IdentityMacKey, IteratedMac, Mac, MacKey, RandomFromPhi, digit,
         endo::{EndoMacKey, EndoMultGroupMac, EndoScalar},
     },
-    utils::parallel::MaybeParallelIter,
 };
-
-#[cfg(feature = "parallel")]
-use rayon::iter::ParallelIterator;
 
 #[cfg(test)]
 use crate::mac::Random;
@@ -435,8 +432,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
                         .iter()
                         .map(move |c_ec_mac| (b_ec_mac.clone(), c_ec_mac.clone()))
                 })
-                .collect::<Vec<_>>()
-                .maybe_par_iter() // or collect and then par_iter
+                .par_bridge()
                 .map(|(b_ec_mac, c_ec_mac)| {
                     // Evaluate the pairing of (A, B)
                     let AB_mac = self
