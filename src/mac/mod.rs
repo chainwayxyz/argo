@@ -6,7 +6,13 @@ use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::{RngCore, rngs::StdRng};
 use derive_more::Deref;
 
-use crate::{garble::Nonce, utils::aes_hash::Hash};
+use crate::{
+    garble::Nonce,
+    utils::{
+        aes_hash::Hash,
+        error::{EvalError, GarbleError},
+    },
+};
 
 pub(crate) mod binary;
 pub(crate) mod bit;
@@ -44,14 +50,14 @@ pub trait Encrypt<H: Hash, Message> {
         dst: Option<&[u8]>,
         parent_nonce: &mut Nonce,
         message: &Message,
-    ) -> Self::Ciphertext;
+    ) -> Result<Self::Ciphertext, GarbleError>;
 
     fn decrypt(
         &self,
         dst: Option<&[u8]>,
         parent_nonce: &mut Nonce,
         ciphertext: &Self::Ciphertext,
-    ) -> Message;
+    ) -> Result<Message, EvalError>;
 }
 
 #[derive(Deref, Clone)]
@@ -122,6 +128,8 @@ where
         self.iter()
             .for_each(|base_key| macs.push(base_key.encode(value)));
 
+        // This unwrap cannot fail because `macs` was constructed by iterating
+        // over a fixed array [BaseMacKey; KAPPA].
         let macs: Box<[BaseMac; KAPPA]> = macs.try_into().unwrap_or_else(|_| panic!());
 
         IteratedMac::from(macs)
@@ -134,7 +142,7 @@ where
             .zip(mac.iter())
             .map(|(key, mac)| key.decode(mac));
 
-        let first_value = values.next().unwrap();
+        let first_value = values.next().expect("There are no values to decode.");
         assert!(values.all(|value| value == first_value));
 
         first_value
@@ -145,6 +153,8 @@ where
         for _ in 0..KAPPA {
             keys.push(BaseMacKey::random_key(rng));
         }
+        // This unwrap cannot fail because `keys` was constructed in a loop
+        // iterating over 0..KAPPA.
         keys.try_into().unwrap_or_else(|_| panic!())
     }
 }

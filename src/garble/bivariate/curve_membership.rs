@@ -8,7 +8,7 @@ use ark_ec::{AdditiveGroup, short_weierstrass::SWCurveConfig};
 use ark_ff::{Field, Zero};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::{UniformRand, rand::rngs::StdRng};
-use std::marker::PhantomData;
+use std::{any::type_name, marker::PhantomData};
 
 use crate::{
     garble::{
@@ -19,6 +19,7 @@ use crate::{
     mac::{IdentityMac, IdentityMacKey, Random},
     utils::{
         bits::{FromBits, NumBits, ToBits},
+        error::{EvalError, GarbleError},
         group::FromLeBytesModOrder,
     },
 };
@@ -99,12 +100,15 @@ where
         rng: &mut StdRng,
         aux: Option<&Self::Aux>,
         input_mac_key: &InputMacKey<C::BaseField>,
-    ) -> (Self, IdentityMacKey) {
+    ) -> Result<(Self, IdentityMacKey), GarbleError> {
         let mut nonce = parent_nonce.fork();
 
         // Bs + s x^3 + (-s) y^2
         // c'0 + c'1 X^3 + c'2 Y^2 + c'3(X)X^2 + c'4(Y)Y + c'5(X)X + c'6(Y) + c'7(X)
-        let s = aux.unwrap();
+        let s = aux.ok_or(GarbleError::AuxError(
+            type_name::<Self::Aux>(),
+            type_name::<Self>(),
+        ))?;
 
         let mut rs = [C::BaseField::ZERO; 8];
         rs[1] = C::BaseField::rand(rng);
@@ -118,8 +122,8 @@ where
             // c'_4
             let table_0 = {
                 let (table, output_mac_key) =
-                    digit_adaptor::Table::garble(&mut nonce, rng, Some(&-rs[2]), &input_mac_key.y);
-                rs[4] = output_mac_key.from_bits_k();
+                    digit_adaptor::Table::garble(&mut nonce, rng, Some(&-rs[2]), &input_mac_key.y)?;
+                rs[4] = output_mac_key.from_bits_k()?;
 
                 table
             };
@@ -127,9 +131,9 @@ where
             // c'_6
             let table_1 = {
                 let (table, output_mac_key) =
-                    digit_adaptor::Table::garble(&mut nonce, rng, Some(&-rs[4]), &input_mac_key.y);
+                    digit_adaptor::Table::garble(&mut nonce, rng, Some(&-rs[4]), &input_mac_key.y)?;
 
-                rs[6] = output_mac_key.from_bits_k();
+                rs[6] = output_mac_key.from_bits_k()?;
 
                 table
             };
@@ -146,9 +150,9 @@ where
             // c'_3
             let table_0 = {
                 let (table, output_mac_key) =
-                    digit_adaptor::Table::garble(&mut nonce, rng, Some(&-rs[1]), &input_mac_key.x);
+                    digit_adaptor::Table::garble(&mut nonce, rng, Some(&-rs[1]), &input_mac_key.x)?;
 
-                rs[3] = output_mac_key.from_bits_k();
+                rs[3] = output_mac_key.from_bits_k()?;
 
                 table
             };
@@ -156,8 +160,8 @@ where
             // c'_5
             let table_1 = {
                 let (table, output_mac_key) =
-                    digit_adaptor::Table::garble(&mut nonce, rng, Some(&-rs[3]), &input_mac_key.x);
-                rs[5] = output_mac_key.from_bits_k();
+                    digit_adaptor::Table::garble(&mut nonce, rng, Some(&-rs[3]), &input_mac_key.x)?;
+                rs[5] = output_mac_key.from_bits_k()?;
 
                 table
             };
@@ -165,8 +169,8 @@ where
             // c'_7
             let table_2 = {
                 let (table, output_mac_key) =
-                    digit_adaptor::Table::garble(&mut nonce, rng, Some(&-rs[5]), &input_mac_key.x);
-                rs[7] = output_mac_key.from_bits_k();
+                    digit_adaptor::Table::garble(&mut nonce, rng, Some(&-rs[5]), &input_mac_key.x)?;
+                rs[7] = output_mac_key.from_bits_k()?;
 
                 table
             };
@@ -189,14 +193,14 @@ where
             [c_prime_0, c_prime_1, c_prime_2]
         };
 
-        (
+        Ok((
             Self {
                 c_primes,
                 x_adaptors,
                 y_adaptors,
             },
             IdentityMacKey,
-        )
+        ))
     }
 
     fn evaluate(
@@ -204,32 +208,30 @@ where
         parent_nonce: &mut Nonce,
         input: &Input<C::BaseField>,
         input_mac: &InputMac<C::BaseField>,
-    ) -> (C::BaseField, IdentityMac<C::BaseField>) {
+    ) -> Result<(C::BaseField, IdentityMac<C::BaseField>), EvalError> {
         let mut nonce = parent_nonce.fork();
 
         let [c_prime_0, c_prime_1, c_prime_2] = self.c_primes;
 
-        let evaluate_x = |table: &digit_adaptor::Table<C::BaseField>, nonce: &mut Nonce| {
-            let digit_mac = table.evaluate(nonce, &input.x, &input_mac.x).1;
-            let field_elems = digit_mac.iter().map(|mac| **mac);
-            C::BaseField::from_bits(field_elems)
+        let evaluate_x = |table: &digit_adaptor::Table<C::BaseField>,
+                          nonce: &mut Nonce|
+         -> Result<C::BaseField, EvalError> {
+            let (_, mac) = table.evaluate(nonce, &input.x, &input_mac.x)?;
+            mac.try_into_group_mac().map(|mac| *mac)
         };
 
-        let evaluate_y = |table: &digit_adaptor::Table<C::BaseField>, nonce: &mut Nonce| {
-            let digit_mac = table.evaluate(nonce, &input.y, &input_mac.y).1;
-            let field_elems = digit_mac.iter().map(|mac| **mac);
-            C::BaseField::from_bits(field_elems)
+        let evaluate_y = |table: &digit_adaptor::Table<C::BaseField>,
+                          nonce: &mut Nonce|
+         -> Result<C::BaseField, EvalError> {
+            let (_, mac) = table.evaluate(nonce, &input.y, &input_mac.y)?;
+            mac.try_into_group_mac().map(|mac| *mac)
         };
 
-        let c_prime_4 = evaluate_y(&self.y_adaptors[0], &mut nonce);
-
-        let c_prime_6 = evaluate_y(&self.y_adaptors[1], &mut nonce);
-
-        let c_prime_3 = evaluate_x(&self.x_adaptors[0], &mut nonce);
-
-        let c_prime_5 = evaluate_x(&self.x_adaptors[1], &mut nonce);
-
-        let c_prime_7 = evaluate_x(&self.x_adaptors[2], &mut nonce);
+        let c_prime_4 = evaluate_y(&self.y_adaptors[0], &mut nonce)?;
+        let c_prime_6 = evaluate_y(&self.y_adaptors[1], &mut nonce)?;
+        let c_prime_3 = evaluate_x(&self.x_adaptors[0], &mut nonce)?;
+        let c_prime_5 = evaluate_x(&self.x_adaptors[1], &mut nonce)?;
+        let c_prime_7 = evaluate_x(&self.x_adaptors[2], &mut nonce)?;
 
         let c_primes = [
             c_prime_0, c_prime_1, c_prime_2, c_prime_3, c_prime_4, c_prime_5, c_prime_6, c_prime_7,
@@ -239,13 +241,14 @@ where
         let curve_eqn = Self::coord_plaintext(input);
 
         let secret = if curve_eqn.is_zero() {
+            #[cfg(test)]
             assert!(coord.is_zero());
             C::BaseField::ZERO
         } else {
             coord / curve_eqn
         };
 
-        (secret, IdentityMac(PhantomData))
+        Ok((secret, IdentityMac(PhantomData)))
     }
 }
 
@@ -267,7 +270,9 @@ where
 
     let input_mac_key = InputMacKey::random_key(rng);
 
-    let garbling_table = Table::<C>::garble(&mut Nonce::new(), rng, Some(&s), &input_mac_key).0;
+    let garbling_table = Table::<C>::garble(&mut Nonce::new(), rng, Some(&s), &input_mac_key)
+        .unwrap()
+        .0;
     clear_set();
 
     let input_mac = input_mac_key.encode(&input);
@@ -275,6 +280,7 @@ where
     let curve_eqn = Table::<C>::coord_plaintext(&input);
     let evaluated_output = garbling_table
         .evaluate(&mut Nonce::new(), &input, &input_mac)
+        .unwrap()
         .0;
     clear_set();
 

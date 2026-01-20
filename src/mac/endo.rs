@@ -19,7 +19,7 @@ use derive_more::{Deref, From};
 use crate::{
     garble::{bivariate::Poly, groth16_verifier::KAPPA_B},
     mac::{IteratedMac, Mac, MacKey, Random, RandomFromPhi},
-    utils::{bits::pow_n_lincomb, group::get_curve_point_not_in_g2},
+    utils::{bits::pow_n_lincomb, error::EvalError, group::get_curve_point_not_in_g2},
 };
 
 pub(crate) const ENDO_SIZE: usize = 7;
@@ -176,7 +176,7 @@ impl<G: GLVConfig> EndoScalar<G> {
         match self {
             Self::NegInf(_) => {
                 let mut coeffs = [G::BaseField::ZERO; 6];
-                coeffs[0] = poly.leading_coeff().unwrap();
+                coeffs[0] = poly.leading_coeff();
                 Poly::new(coeffs)
             }
             _ => {
@@ -273,13 +273,13 @@ where
     }
 
     /// Recover a single missing endoscalar from a checksummed array.
-    pub(crate) fn decode(endoscalars: &[Option<usize>]) -> Vec<Self> {
+    pub(crate) fn decode(endoscalars: &[Option<usize>]) -> Result<Vec<Self>, EvalError> {
         let mut result = vec![Self::Zero(PhantomData); KAPPA_B];
 
         let mut missing_idx = vec![];
         endoscalars.iter().enumerate().for_each(|(idx, phi)| {
-            if phi.is_some() {
-                let phi = Self::from_u8(phi.unwrap() as u8);
+            if let Some(phi) = phi {
+                let phi = Self::from_u8(*phi as u8);
                 result[idx] = phi;
             } else {
                 missing_idx.push(idx);
@@ -287,11 +287,13 @@ where
         });
 
         // The decoding can only fail in one idx
-        assert_eq!(missing_idx.len(), 1);
+        if missing_idx.len() > 1 {
+            return Err(EvalError::DecodingError);
+        }
 
         result[missing_idx[0]] = Self::checksum(&result);
 
-        result
+        Ok(result)
     }
 }
 

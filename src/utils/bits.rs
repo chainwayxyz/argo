@@ -4,13 +4,15 @@ use lazy_static::lazy_static;
 use std::ops::{Add, Mul, MulAssign};
 
 lazy_static! {
+    /// Fq2 {c0: 0, c1: 1}.
+    /// This unwrap cannot fail as this is a valid Fq2 element.
     static ref ALPHA: Fq2 = Fq2::from_base_prime_field_elems([Fq::ZERO, Fq::ONE]).unwrap();
 }
 
 pub trait FromBits<B, V> {
     /// Takes a bit representation where each bit is encoded as a value in `B`,
     /// and composes it to reconstruct a value in `V`.
-    fn from_bits<I: DoubleEndedIterator<Item = B> + ExactSizeIterator>(bits: I) -> V;
+    fn from_bits<I: DoubleEndedIterator<Item = B> + ExactSizeIterator>(bits: I) -> Option<V>;
 }
 
 pub trait NumBits {
@@ -24,49 +26,64 @@ pub trait ToBits {
 }
 
 impl FromBits<bool, Fq> for Fq {
-    fn from_bits<I: DoubleEndedIterator<Item = bool>>(bits: I) -> Fq {
-        Fq::from_bigint(BigInteger::from_bits_le(&bits.collect::<Vec<_>>())).unwrap()
+    fn from_bits<I: DoubleEndedIterator<Item = bool>>(bits: I) -> Option<Fq> {
+        Fq::from_bigint(BigInteger::from_bits_le(&bits.collect::<Vec<_>>()))
     }
 }
 
 impl FromBits<bool, Fq2> for Fq2 {
-    fn from_bits<I: DoubleEndedIterator<Item = bool> + ExactSizeIterator>(mut bits: I) -> Fq2 {
+    /// # Panics
+    /// 
+    /// Panics if `bits` is not of length Fq::MODULUS_BIT_SIZE * 2.
+    fn from_bits<I: DoubleEndedIterator<Item = bool> + ExactSizeIterator>(
+        mut bits: I,
+    ) -> Option<Fq2> {
         let fp_len = Fq::MODULUS_BIT_SIZE as usize;
         assert_eq!(bits.len(), fp_len * 2);
 
-        let c0 = Fq::from_bits(bits.by_ref().take(fp_len));
-        let c1 = Fq::from_bits(bits.skip(fp_len));
+        let c0 = Fq::from_bits(bits.by_ref().take(fp_len))?;
+        let c1 = Fq::from_bits(bits.skip(fp_len))?;
 
-        Fq2::from_base_prime_field_elems([c0, c1]).unwrap()
+        Fq2::from_base_prime_field_elems([c0, c1])
     }
 }
 
 impl FromBits<Fq, Fq> for Fq {
-    fn from_bits<I: DoubleEndedIterator<Item = Fq>>(bits: I) -> Fq {
-        pow_two_lincomb::<_, Fq, Fq>(bits)
+    fn from_bits<I: DoubleEndedIterator<Item = Fq>>(bits: I) -> Option<Fq> {
+        Some(pow_two_lincomb::<_, Fq, Fq>(bits))
     }
 }
 
 impl FromBits<Fr, Fr> for Fr {
-    fn from_bits<I: DoubleEndedIterator<Item = Fr>>(bits: I) -> Fr {
-        pow_two_lincomb::<_, Fr, Fr>(bits)
+    fn from_bits<I: DoubleEndedIterator<Item = Fr>>(bits: I) -> Option<Fr> {
+        Some(pow_two_lincomb::<_, Fr, Fr>(bits))
     }
 }
 
 impl FromBits<Fq, Fq2> for Fq2 {
-    fn from_bits<I: DoubleEndedIterator<Item = Fq> + ExactSizeIterator>(mut bits: I) -> Fq2 {
+    /// # Panics
+    /// 
+    /// Panics if `bits` is not of length Fq::MODULUS_BIT_SIZE * 2.
+    fn from_bits<I: DoubleEndedIterator<Item = Fq> + ExactSizeIterator>(
+        mut bits: I,
+    ) -> Option<Fq2> {
         let fp_len = Fq::MODULUS_BIT_SIZE as usize;
         assert_eq!(bits.len(), fp_len * 2);
 
-        let c0 = Fq::from_bits(bits.by_ref().take(fp_len));
-        let c1 = Fq::from_bits(bits.skip(fp_len));
+        let c0 = Fq::from_bits(bits.by_ref().take(fp_len))?;
+        let c1 = Fq::from_bits(bits.skip(fp_len))?;
 
-        Fq2::from_base_prime_field_elems([c0, c1]).unwrap()
+        Fq2::from_base_prime_field_elems([c0, c1])
     }
 }
 
 impl FromBits<Fq2, Fq2> for Fq2 {
-    fn from_bits<I: DoubleEndedIterator<Item = Fq2> + ExactSizeIterator>(mut bits: I) -> Fq2 {
+    /// # Panics
+    /// 
+    /// Panics if `bits` is not of length Fq::MODULUS_BIT_SIZE * 2.
+    fn from_bits<I: DoubleEndedIterator<Item = Fq2> + ExactSizeIterator>(
+        mut bits: I,
+    ) -> Option<Fq2> {
         let fp_len = Fq::MODULUS_BIT_SIZE as usize;
         assert_eq!(bits.len(), fp_len * 2);
 
@@ -75,7 +92,7 @@ impl FromBits<Fq2, Fq2> for Fq2 {
 
         let c1 = pow_two_lincomb::<_, Fq2, Fq2>(bits.map(|bit| bit * *ALPHA));
 
-        c0 + c1
+        Some(c0 + c1)
     }
 }
 

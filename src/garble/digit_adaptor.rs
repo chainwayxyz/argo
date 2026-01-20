@@ -16,6 +16,7 @@ use crate::{
     utils::{
         aes_hash::aes_ctr::AesCtr,
         bits::{FromBits, NumBits, ToBits},
+        error::{EvalError, GarbleError},
         group::FromLeBytesModOrder,
     },
 };
@@ -49,20 +50,20 @@ where
         rng: &mut StdRng,
         aux: Option<&Self::Aux>,
         input_mac_key: &InputMacKey<F>,
-    ) -> (Self, OutputMacKey<F>) {
+    ) -> Result<(Self, OutputMacKey<F>), GarbleError> {
         let mut nonce = parent_nonce.fork();
 
         let mut bit_adaptor_tables = Vec::with_capacity(F::num_bits() as usize);
         let mut output_mac_keys = Vec::with_capacity(F::num_bits() as usize);
 
-        input_mac_key.iter().for_each(|input_key| {
+        for input_key in input_mac_key.iter() {
             let (table, output_mac_key) =
-                bit_adaptor::Table::garble(&mut nonce, rng, aux, input_key);
+                bit_adaptor::Table::garble(&mut nonce, rng, aux, input_key)?;
             bit_adaptor_tables.push(table);
             output_mac_keys.push(output_mac_key);
-        });
+        }
 
-        (Self(bit_adaptor_tables), output_mac_keys.into())
+        Ok((Self(bit_adaptor_tables), output_mac_keys.into()))
     }
 
     fn evaluate(
@@ -70,23 +71,23 @@ where
         parent_nonce: &mut Nonce,
         input: &F,
         input_mac: &InputMac<F>,
-    ) -> (F, OutputMac<F>) {
+    ) -> Result<(F, OutputMac<F>), EvalError> {
         let mut nonce = parent_nonce.fork();
 
         let input_bits = input.to_bits();
         let mut bit_group_macs = Vec::with_capacity(F::num_bits() as usize);
 
-        input_bits
+        for ((input, input_mac), table) in input_bits
             .iter()
             .take(F::num_bits() as usize)
             .zip(input_mac.iter())
             .zip(self.0.iter())
-            .for_each(|((input, input_mac), table)| {
-                let table = table.evaluate(&mut nonce, input, input_mac).1;
-                bit_group_macs.push(table);
-            });
+        {
+            let table = table.evaluate(&mut nonce, input, input_mac)?.1;
+            bit_group_macs.push(table);
+        }
 
-        (*input, bit_group_macs.into())
+        Ok((*input, bit_group_macs.into()))
     }
 }
 
@@ -113,11 +114,14 @@ where
     let input_mac = input_mac_key.encode(&input);
 
     let (table, output_mac_key) =
-        Table::garble(&mut Nonce::new(), &mut rng, Some(&phi), &input_mac_key);
+        Table::garble(&mut Nonce::new(), &mut rng, Some(&phi), &input_mac_key).unwrap();
     clear_set();
 
     let expected_output_mac = output_mac_key.encode(&output);
-    let evaluated_output_mac = table.evaluate(&mut Nonce::new(), &input, &input_mac).1;
+    let evaluated_output_mac = table
+        .evaluate(&mut Nonce::new(), &input, &input_mac)
+        .unwrap()
+        .1;
     clear_set();
 
     assert_eq!(expected_output_mac, evaluated_output_mac);

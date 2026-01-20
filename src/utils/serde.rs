@@ -102,12 +102,12 @@ where
         for _ in 0..N {
             macs.push(M::deserialize_with_mode(&mut reader, compress, validate)?);
         }
-        let macs: Box<[_; N]> = macs
+        let macs: Result<Box<[_; N]>, _> = macs
             .into_boxed_slice()
             .try_into()
-            .unwrap_or_else(|_| panic!());
+            .map_err(|_| SerializationError::InvalidData);
 
-        Ok(IteratedMac::from(macs))
+        macs.map(|macs| IteratedMac::from(macs))
     }
 }
 

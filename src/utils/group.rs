@@ -9,10 +9,12 @@ use crate::utils::bits::ToBits;
 lazy_static! {
     /// A 17-byte offset in Bn254::Fq, i.e. Fq(2^{8 * 17})
     /// Used in optimised from_le_bytes_mod_order for hash_to_field
+    /// This unwrap cannot fail as the value is smaller than the field modulus.
     pub static ref FQ_LO_BYTES_OFFSET: Fq = Fq::from_bigint(BigInt::one() << (8 * 17)).unwrap();
 
     /// A 17-byte offset in Bn254::Fr, i.e. Fr(2^{8 * 17})
     /// Used in optimised from_le_bytes_mod_order for hash_to_field
+    /// This unwrap cannot fail as the value is smaller than the field modulus.
     pub static ref FR_LO_BYTES_OFFSET: Fr = Fr::from_bigint(BigInt::one() << (8 * 17)).unwrap();
 }
 
@@ -23,6 +25,7 @@ fn to_u64_array<const N: usize>(bytes: &[u8]) -> [u64; N] {
         let offset = i * 8;
         if offset + 8 <= bytes.len() {
             // Fast path: read full u64
+            // This unwrap cannot fail since it is hard-coded to 8 bytes
             *word = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
         } else if offset < bytes.len() {
             // Slow path: partial bytes

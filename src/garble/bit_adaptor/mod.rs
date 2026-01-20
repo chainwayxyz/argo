@@ -12,7 +12,7 @@ use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use crate::{
     garble::{Nonce, groth16_verifier::GID},
     mac::{Encrypt, Mac, Random},
-    utils::aes_hash::Hash,
+    utils::{aes_hash::Hash, error::GarbleError},
 };
 
 #[derive(CanonicalSerialize, CanonicalDeserialize, Debug)]
@@ -40,5 +40,5 @@ where
         dst: Option<&[u8; 16]>,
         parent_nonce: &Nonce,
         phi: &Self::Phi,
-    ) -> OutputMac::Key;
+    ) -> Result<OutputMac::Key, GarbleError>;
 }

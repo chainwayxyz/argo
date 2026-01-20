@@ -1,6 +1,9 @@
 use ark_std::rand::rngs::StdRng;
 
-use crate::mac::Mac;
+use crate::{
+    mac::Mac,
+    utils::error::{EvalError, GarbleError},
+};
 
 pub(crate) mod binary;
 pub(crate) mod bit_adaptor;
@@ -27,7 +30,7 @@ where
         rng: &mut StdRng,
         aux: Option<&Self::Aux>,
         input_mac_key: &<InputMac as Mac<InputValue>>::Key,
-    ) -> (Self, <OutputMac as Mac<OutputValue>>::Key);
+    ) -> Result<(Self, <OutputMac as Mac<OutputValue>>::Key), GarbleError>;
 
     /// Given a garbling table, an input, and an input MAC, return an output
     /// value and an output MAC
@@ -36,7 +39,7 @@ where
         parent_nonce: &mut Nonce,
         input: &InputValue,
         input_mac: &InputMac,
-    ) -> (OutputValue, OutputMac);
+    ) -> Result<(OutputValue, OutputMac), EvalError>;
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]

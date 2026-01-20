@@ -7,7 +7,7 @@ use ark_ec::{
 use ark_ff::Field;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::{UniformRand, rand::rngs::StdRng};
-use std::ops::Mul;
+use std::{any::type_name, ops::Mul};
 
 use crate::{
     garble::{Circuit, Nonce, bit_adaptor},
@@ -16,11 +16,12 @@ use crate::{
         bit::{bytes::Bit16ByteMac, group::BitGroupMac},
         digit::{bytes, group},
         endo::{EndoMac, EndoMacKey, EndoScalar},
-        group::{GroupMac, GroupMacKey},
+        group::GroupMacKey,
     },
     utils::{
         aes_hash::aes_ctr::AesCtr,
         bits::{FromBits, NumBits, ToBits},
+        error::{EvalError, GarbleError},
         group::FromLeBytesModOrder,
     },
 };
@@ -34,18 +35,18 @@ pub(crate) type OutputMac<C, const KAPPA: usize> = IteratedMac<Affine<C>, EndoMa
 // { \phi_i, b • c_i }
 pub(crate) type OutputMacKey<C, const KAPPA: usize> = [EndoMacKey<C>; KAPPA];
 
-#[derive(CanonicalSerialize, CanonicalDeserialize)]
+#[derive(Debug, CanonicalSerialize, CanonicalDeserialize)]
 pub(crate) struct Table<C: GLVConfig, const KAPPA: usize>
 where
     C::ScalarField: Random,
     <C::ScalarField as Field>::BasePrimeField: FromLeBytesModOrder,
 {
-    adaptors: Vec<bit_adaptor::Table<AesCtr, Bit16ByteMac, BitGroupMac<C::ScalarField>>>,
-    point: Affine<C>,
+    pub(crate) adaptors: Vec<bit_adaptor::Table<AesCtr, Bit16ByteMac, BitGroupMac<C::ScalarField>>>,
+    pub(crate) point: Affine<C>,
     // S_i = [\phi_i]P + [a • c_i]P
-    s: Vec<Affine<C>>,
+    pub(crate) s: [Affine<C>; KAPPA],
     // T_i = [c_i]P
-    t: Vec<Affine<C>>,
+    pub(crate) t: [Affine<C>; KAPPA],
 }
 
 impl<C: GLVConfig + Clone, const KAPPA: usize> Table<C, KAPPA>
@@ -78,6 +79,8 @@ where
                 })
             });
 
+        // This unwrap cannot fail since `phi`, `k_scalars`, `k` are all
+        // known to be length `KAPPA`.
         keys.try_into().unwrap_or_else(|_| panic!())
     }
 }
@@ -92,13 +95,19 @@ where
 {
     type Aux = (Affine<C>, [EndoScalar<C>; KAPPA]);
 
+    /// # Panics
+    /// 
+    /// Panics if reconstructed input_mac_key.k is C::ScalarField::ZERO.
     fn garble(
         parent_nonce: &mut Nonce,
         rng: &mut StdRng,
         aux: Option<&Self::Aux>,
         input_mac_key: &InputMacKey<C>,
-    ) -> (Self, OutputMacKey<C, KAPPA>) {
-        let (point, phis) = aux.unwrap();
+    ) -> Result<(Self, OutputMacKey<C, KAPPA>), GarbleError> {
+        let (point, phis) = aux.ok_or(GarbleError::AuxError(
+            type_name::<Self::Aux>(),
+            type_name::<Self>(),
+        ))?;
         let mut nonce = parent_nonce.fork();
 
         // Adaptor tables for the scalar
@@ -107,22 +116,25 @@ where
         let mut adaptors = Vec::with_capacity(input_mac_key.len());
         let mut adapted_mac_key = Vec::with_capacity(input_mac_key.len());
 
-        input_mac_key.iter().for_each(|bit_mac_key| {
+        for bit_mac_key in input_mac_key.iter() {
             let (table, mac_key) = bit_adaptor::Table::<
                 AesCtr,
                 Bit16ByteMac,
                 BitGroupMac<C::ScalarField>,
-            >::garble(&mut nonce, rng, Some(&phi), bit_mac_key);
+            >::garble(&mut nonce, rng, Some(&phi), bit_mac_key)?;
             adaptors.push(table);
             adapted_mac_key.push(mac_key);
-        });
+        }
 
         let input_mac_key: group::DigitMacKey<C::ScalarField> = adapted_mac_key.into();
-        let input_mac_key: GroupMacKey<C::ScalarField> = (&input_mac_key).into();
+        let input_mac_key = input_mac_key
+            .try_into_group_mac_key()
+            .ok_or(GarbleError::DigitMacKeyReconstructionError)?;
 
         let a = input_mac_key.phi;
         let b = input_mac_key.k;
-        let b_inv = b.inverse().unwrap();
+        // We assume that input_mac_key.k is nonzero.
+        let b_inv = b.inverse().expect("Reconstructed input_mac_key.k must be nonzero.");
 
         let output_mac_key = Self::output_mac_key_from_phis(rng, &input_mac_key, phis);
 
@@ -137,15 +149,19 @@ where
             .collect();
         let s = Projective::<C>::normalize_batch(&s);
 
-        (
+        Ok((
             Self {
                 adaptors,
                 point: *point,
-                s,
-                t,
+                // This unwrap cannot fail because `output_mac_key` is a fixed
+                // array of `[EndoMacKey; KAPPA]`.
+                s: s.try_into().unwrap(),
+                // This unwrap cannot fail because `output_mac_key` is a fixed
+                // array of `[EndoMacKey; KAPPA]`.
+                t: t.try_into().unwrap(),
             },
             output_mac_key.clone(),
-        )
+        ))
     }
 
     fn evaluate(
@@ -153,29 +169,36 @@ where
         parent_nonce: &mut Nonce,
         input: &Input<C>,
         input_mac: &InputMac<C>,
-    ) -> (Output<C>, OutputMac<C, KAPPA>) {
+    ) -> Result<(Output<C>, OutputMac<C, KAPPA>), EvalError> {
         let mut nonce = parent_nonce.fork();
 
-        let input_mac: Vec<_> = self
+        let mut adapted_input_mac = Vec::with_capacity(self.adaptors.len());
+
+        for ((adaptor, input), input_mac) in self
             .adaptors
             .iter()
             .zip(input.to_bits().iter())
             .zip(input_mac.iter())
-            .map(|((adaptor, input), input_mac)| adaptor.evaluate(&mut nonce, input, input_mac).1)
-            .collect();
+        {
+            let mac = adaptor.evaluate(&mut nonce, input, input_mac)?.1;
+            adapted_input_mac.push(mac);
+        }
 
-        let input_mac: group::DigitMac<C::ScalarField> = input_mac.into();
-        let input_mac: GroupMac<C::ScalarField> = (&input_mac).into();
+        let input_mac: group::DigitMac<C::ScalarField> = adapted_input_mac.into();
+        let input_mac = input_mac.try_into_group_mac()?;
 
-        let output_mac: Box<[EndoMac<C>; KAPPA]> = self
+        let output_mac: Vec<_> = self
             .t
             .iter()
             .zip(self.s.iter())
             .map(|(t, s)| EndoMac::from((t.mul(*input_mac) + s.mul(input)).into_affine()))
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap_or_else(|_| panic!());
-        (self.point.mul(input).into_affine(), output_mac.into())
+            .collect();
+        // This unwrap cannot fail because both `self.t`, `self.s` are fixed
+        // arrays of length `KAPPA`.
+        let output_mac: Box<[EndoMac<C>; KAPPA]> =
+            output_mac.try_into().unwrap_or_else(|_| panic!());
+
+        Ok((self.point.mul(input).into_affine(), output_mac.into()))
     }
 }
 
@@ -208,12 +231,16 @@ fn test_scalar_mul_fixed() {
         &mut rng,
         Some(&(point.into_affine(), phis)),
         &input_mac_key,
-    );
+    )
+    .unwrap();
     clear_set();
 
     let expected_output_mac = output_mac_key.encode(&point.mul(input).into_affine());
 
-    let output_mac = circuit.evaluate(&mut Nonce::new(), &input, &input_mac).1;
+    let output_mac = circuit
+        .evaluate(&mut Nonce::new(), &input, &input_mac)
+        .unwrap()
+        .1;
     clear_set();
 
     assert!(output_mac == expected_output_mac);

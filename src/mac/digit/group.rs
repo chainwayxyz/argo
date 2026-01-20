@@ -13,7 +13,10 @@ use crate::{
         bit::group::BitGroupMac,
         group::{GroupMac, GroupMacKey},
     },
-    utils::bits::{FromBits, NumBits, ToBits},
+    utils::{
+        bits::{FromBits, NumBits, ToBits},
+        error::{EvalError, GarbleError},
+    },
 };
 
 pub(crate) type DigitMac<G> = super::DigitMac<G, BitGroupMac<G>>;
@@ -33,12 +36,14 @@ where
     }
 }
 
-impl<G> From<&DigitMac<G>> for GroupMac<G>
+impl<G> DigitMac<G>
 where
     G: AdditiveGroup + FromBits<G, G> + Random,
 {
-    fn from(value: &DigitMac<G>) -> Self {
-        G::from_bits(value.iter().map(|mac| **mac)).into()
+    pub(crate) fn try_into_group_mac(&self) -> Result<GroupMac<G>, EvalError> {
+        G::from_bits(self.iter().map(|mac| **mac))
+            .map(|mac| mac.into())
+            .ok_or(EvalError::DigitMacReconstructionError)
     }
 }
 
@@ -46,21 +51,18 @@ impl<G> DigitMacKey<G>
 where
     G: FromBits<G, G> + AdditiveGroup + Random,
 {
-    pub(crate) fn from_bits_k(&self) -> G {
+    pub(crate) fn from_bits_k(&self) -> Result<G, GarbleError> {
         let ks = self.iter().map(|key| key.k);
-        G::from_bits(ks)
+        G::from_bits(ks).ok_or(GarbleError::DigitMacKeyReconstructionError)
     }
-}
 
-impl<G> From<&DigitMacKey<G>> for GroupMacKey<G>
-where
-    G: AdditiveGroup + FromBits<G, G> + Random,
-{
-    fn from(val: &DigitMacKey<G>) -> Self {
-        GroupMacKey {
-            phi: val[0].phi,
-            k: G::from_bits(val.iter().map(|key| key.k)),
-        }
+    pub(crate) fn try_into_group_mac_key(&self) -> Option<GroupMacKey<G>> {
+        let k = G::from_bits(self.iter().map(|key| key.k));
+
+        k.map(|k| GroupMacKey {
+            phi: self[0].phi,
+            k,
+        })
     }
 }
 
@@ -105,6 +107,7 @@ where
                 .zip(mac.iter())
                 .map(|(key, mac)| G::Scalar::from(key.decode(mac))),
         )
+        .unwrap()
     }
 
     fn random_key(rng: &mut StdRng) -> Self {

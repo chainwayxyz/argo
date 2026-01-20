@@ -38,22 +38,30 @@ fn invalid_snark(c: &mut Criterion) {
     garble_group.sample_size(100);
     garble_group.bench_function("garble", |b| {
         b.iter(|| {
-            garble_groth16(SEED, secret, verifier_key, &input_mac_key, gid);
+            garble_groth16(SEED, secret, verifier_key, &input_mac_key, gid).unwrap();
         })
     });
     garble_group.finish();
 
-    let table = garble_groth16(SEED, secret, verifier_key, &input_mac_key, gid);
+    let table = garble_groth16(SEED, secret, verifier_key, &input_mac_key, gid).unwrap();
 
     let input_mac: InputMac = input_mac_key.encode(&input);
 
     let mut evaluate_group = c.benchmark_group("groth16-evaluate");
     evaluate_group.sample_size(100);
     evaluate_group.bench_function("evaluate", |b| {
-        b.iter(|| table.evaluate(&mut Nonce::new(), &input, &input_mac).0)
+        b.iter(|| {
+            table
+                .evaluate(&mut Nonce::new(), &input, &input_mac)
+                .unwrap()
+                .0
+        })
     });
 
-    let output = table.evaluate(&mut Nonce::new(), &input, &input_mac).0;
+    let output = table
+        .evaluate(&mut Nonce::new(), &input, &input_mac)
+        .unwrap()
+        .0;
 
     assert_eq!(output, secret);
 }

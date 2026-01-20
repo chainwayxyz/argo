@@ -34,6 +34,7 @@ lazy_static! {
             vec![G2Projective::generator()],
         );
     /// [r]P, where P is a point on E'/Fp2 with x-coordinate = 1
+    /// This unwrap cannot fail since this is a valid curve point.
     pub static ref R_MUL_COFACTOR_GENERATOR: Affine<g2::Config> = (Affine::get_point_from_x_unchecked(Fq2::ONE, true).unwrap().mul_bigint(Fr::MODULUS)).into();
 }
 
@@ -123,6 +124,8 @@ impl Table {
             output_mac.push(EndoMultGroupMac::from(pairing.0));
         });
 
+        // This unwrap cannot fail since both `B_mac` and `self.0` are fixed
+        // arrays of size `KAPPA_B`.
         let output_mac: Box<[EndoMultGroupMac; KAPPA_B]> =
             output_mac.try_into().unwrap_or_else(|_| panic!());
 
@@ -196,6 +199,8 @@ impl Table {
             b = v / ENDO_SIZE;
         }
 
+        // This unwrap cannot fail since `endoscalars` was constructed in a for
+        // loop ranging from 0..KAPPA_A.
         endoscalars.try_into().unwrap_or_else(|_| panic!())
     }
 
@@ -226,9 +231,7 @@ impl Table {
     //
     // Let G' = r * G
     // Let K_i = (x * r_i * H) + GENERATOR_EXPONENT^i * G'
-    fn derive_b_ks(g2_b_ks: &[Affine<g2::Config>]) -> [Affine<g2::Config>; KAPPA_B] {
-        assert_eq!(g2_b_ks.len(), KAPPA_B);
-
+    fn derive_b_ks(g2_b_ks: &[Affine<g2::Config>; KAPPA_B]) -> [Affine<g2::Config>; KAPPA_B] {
         let b_ks = g2_b_ks
             .iter()
             .enumerate()
@@ -247,6 +250,8 @@ impl Table {
 
         let b_ks = Projective::<g2::Config>::normalize_batch(&b_ks);
 
+        // This unwrap cannot fail since g2_b_ks is a fixed array of length
+        // `KAPPA_B`.
         b_ks.try_into().unwrap()
     }
 
@@ -290,7 +295,9 @@ impl Table {
         }
 
         let g2_B_ks = G2Projective::generator().batch_mul(&g2_B_ks_scalar);
-        let B_ks = Self::derive_b_ks(&g2_B_ks);
+        // This unwrap cannot fail since `g2_B_ks_scalar` is a fixed array of
+        // length `KAPPA_B`.
+        let B_ks = Self::derive_b_ks(&g2_B_ks.try_into().unwrap());
 
         let B_phis = EndoScalar::<g2::Config>::sample_endoscalars_with_checksum::<KAPPA_B>(rng);
 
@@ -315,6 +322,8 @@ impl Table {
         let mut output_ks = [Fq12::ZERO; KAPPA_B];
         for (output_k, r) in output_ks.iter_mut().zip(rs.iter()) {
             let exp = (*r * k).into_bigint();
+            // This unwrap cannot fail because we compute enough `powers_of_2`
+            // for `Fr`.
             *output_k = Fq12::pow_with_table(&powers_of_2, exp).unwrap();
         }
 
@@ -327,6 +336,9 @@ impl Table {
                 k,
             });
         }
+        // This unwrap cannot fail because `A_phis`, `A_ks_scalar`, `A_ks` are
+        // all fixed-size arrays of length `KAPPA_A`.
+        let A_mac_key = A_mac_key.try_into().unwrap_or_else(|_| panic!());
 
         // Build B_mac_key efficiently with known size
         let mut B_mac_key = Vec::with_capacity(KAPPA_B);
@@ -337,6 +349,9 @@ impl Table {
                 k,
             });
         }
+        // This unwrap cannot fail because `B_phis`, `g2_B_ks_scalar`, `B_ks`
+        // are all of length `KAPPA_B`.
+        let B_mac_key = B_mac_key.try_into().unwrap_or_else(|_| panic!());
 
         // Build output_mac_key efficiently with known size
         let mut output_mac_key = Vec::with_capacity(KAPPA_B);
@@ -346,15 +361,11 @@ impl Table {
                 k: *k_val,
             });
         }
+        // This unwrap cannot fail because `B_phis`, `output_ks` are of length
+        // `KAPPA_B`.
+        let output_mac_key = output_mac_key.try_into().unwrap_or_else(|_| panic!());
 
-        (
-            (
-                A_mac_key.try_into().unwrap_or_else(|_| panic!()),
-                B_mac_key.try_into().unwrap_or_else(|_| panic!()),
-            ),
-            output_mac_key.try_into().unwrap_or_else(|_| panic!()),
-            rs,
-        )
+        ((A_mac_key, B_mac_key), output_mac_key, rs)
     }
 }
 

@@ -9,13 +9,14 @@
 pub(crate) mod input_validity;
 
 use core::panic;
-use std::sync::RwLock;
+use std::{any::type_name, marker::PhantomData};
 
 use ark_bn254::{Bn254, Fq, Fq2, Fq12, Fr, G1Affine, G1Projective, G2Affine, G2Projective, g1, g2};
 use ark_ec::{AffineRepr, pairing::Pairing};
 use ark_ff::{AdditiveGroup, Field, PrimeField};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::{SeedableRng, rngs::StdRng};
+use parking_lot::RwLock;
 use rayon::iter::{ParallelBridge, ParallelIterator};
 
 use crate::{
@@ -26,6 +27,7 @@ use crate::{
         IdentityMac, IdentityMacKey, IteratedMac, Mac, MacKey, RandomFromPhi, digit,
         endo::{EndoMacKey, EndoMultGroupMac, EndoScalar},
     },
+    utils::error::{EvalError, GarbleError},
 };
 
 #[cfg(test)]
@@ -41,7 +43,7 @@ static PREPROCESSED_VK: RwLock<Option<GarblePreprocessedVk>> = RwLock::new(None)
 
 #[cfg(test)]
 pub(crate) fn reset_preprocessed_vk() {
-    let mut w = PREPROCESSED_VK.write().unwrap();
+    let mut w = PREPROCESSED_VK.write();
     *w = None;
 }
 
@@ -87,10 +89,8 @@ impl VerifierKey {
     }
 
     pub(crate) fn garble_preprocess(&self) -> GarblePreprocessedVk {
-        {
-            if let Some(vk) = PREPROCESSED_VK.read().unwrap().as_ref() {
-                return *vk;
-            }
+        if let Some(vk) = PREPROCESSED_VK.read().as_ref() {
+            return *vk;
         }
 
         let preprocessed_vk = {
@@ -121,10 +121,7 @@ impl VerifierKey {
             }
         };
 
-        PREPROCESSED_VK
-            .write()
-            .unwrap()
-            .get_or_insert(preprocessed_vk);
+        PREPROCESSED_VK.write().get_or_insert(preprocessed_vk);
 
         preprocessed_vk
     }
@@ -211,7 +208,7 @@ pub fn garble_groth16(
     verifier_key: VerifierKey,
     input_mac_key: &InputMacKey,
     gid: GID,
-) -> Table {
+) -> Result<Table, GarbleError> {
     let mut rng = StdRng::seed_from_u64(rng_seed);
     let mut nonce = Nonce::new();
 
@@ -220,7 +217,7 @@ pub fn garble_groth16(
         &mut rng,
         Some(&(secret, gid, verifier_key)),
         input_mac_key,
-    )
+    )?
     .0;
 
     #[cfg(test)]
@@ -228,7 +225,7 @@ pub fn garble_groth16(
     #[cfg(test)]
     aes_mitccr_clear_set();
 
-    table
+    Ok(table)
 }
 
 #[derive(CanonicalSerialize, CanonicalDeserialize)]
@@ -262,9 +259,12 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         rng: &mut StdRng,
         aux: Option<&Self::Aux>,
         input_mac_key: &InputMacKey,
-    ) -> (Self, <IdentityMac<Output> as Mac<Output>>::Key) {
+    ) -> Result<(Self, <IdentityMac<Output> as Mac<Output>>::Key), GarbleError> {
         // The secret that will be conditionally revealed, and the Groth16 verifier key
-        let (secret, gid, verifier_key) = aux.unwrap();
+        let (secret, gid, verifier_key) = aux.ok_or(GarbleError::AuxError(
+            type_name::<Self::Aux>(),
+            type_name::<Self>(),
+        ))?;
 
         // Sample random MAC keys and auxiliary values for the pairing table:
         // - a_ec_mac_key: used as the output key for field_to_ec_mac of `A`
@@ -286,6 +286,8 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         pairing_output_mac_key
             .iter()
             .for_each(|key| c_ec_mac_key.push(EndoMacKey::random_from_phi(rng, &key.phi)));
+        // This unwrap cannot fail because `pairing_output_mac_key` is a fixed
+        // array of `[EndoMultGroupMacKey; KAPPA_B]`.
         let c_ec_mac_key: [EndoMacKey<g1::Config>; KAPPA_B] =
             c_ec_mac_key.try_into().unwrap_or_else(|_| panic!());
 
@@ -297,7 +299,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
             Some(&(true, a_ec_mac_key.clone())),
             // Input MAC key for the (x, y) coordinates of `A`
             &input_mac_key.A,
-        )
+        )?
         .0;
 
         // Garbling table for field_to_ec_mac of `B`
@@ -308,7 +310,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
             Some(&(false, b_ec_mac_key.clone())),
             // Input MAC key for the (x, y) coordinates of `B`
             &input_mac_key.B,
-        )
+        )?
         .0;
 
         // Garbling table for field_to_ec_mac of `C`
@@ -319,7 +321,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
             Some(&(false, c_ec_mac_key.clone())),
             // Input MAC key for the (x, y) coordinates of `C`
             &input_mac_key.C,
-        )
+        )?
         .0;
 
         let (x_G, x_G_output_mac_key) = {
@@ -330,16 +332,16 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
                 .iter_mut()
                 .zip(pairing_output_mac_key.iter())
                 .for_each(|(phi, key)| *phi = key.phi.clone());
+            // This unwrap cannot fail as `c_phis`, `pairing_output_mac_key`
+            // are both of length `KAPPA_B`.
+            let c_phis = c_phis.try_into().unwrap_or_else(|_| panic!());
 
             scalar_mul::fixed::Table::garble(
                 parent_nonce,
                 rng,
-                Some(&(
-                    verifier_key.G1.into(),
-                    c_phis.try_into().unwrap_or_else(|_| panic!()),
-                )),
+                Some(&(verifier_key.G1.into(), c_phis)),
                 input_mac_key,
-            )
+            )?
         };
 
         let input_validity = {
@@ -348,7 +350,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
                 gid: *gid,
                 b_ec_mac_key: Box::new(b_ec_mac_key),
             };
-            input_validity::Table::garble(parent_nonce, rng, &aux, input_mac_key).0
+            input_validity::Table::garble(parent_nonce, rng, &aux, input_mac_key)?
         };
 
         // Garbling table for the pairing e(A, B). It uses a_ec_mac_key,
@@ -363,12 +365,12 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
                 &pairing_output_mac_key,
                 &c_ec_mac_key,
                 &x_G_output_mac_key,
-            );
+            )?;
 
-            conditional_reveal::Table::garble(enc_s, &input_mac_key).0
+            conditional_reveal::Table::garble(enc_s, &input_mac_key)
         };
 
-        (
+        Ok((
             Self {
                 input_validity,
                 x_G,
@@ -381,7 +383,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
                 gid: *gid,
             },
             IdentityMacKey,
-        )
+        ))
     }
 
     fn evaluate(
@@ -389,7 +391,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         parent_nonce: &mut Nonce,
         input: &Input,
         input_mac: &InputMac,
-    ) -> (Output, IdentityMac<Output>) {
+    ) -> Result<(Output, IdentityMac<Output>), EvalError> {
         // The Groth16 input (A, B, C).
         let Input { A, B, C, x } = *input;
         let VerifierKey { H1, H2, .. } = self.verifier_key;
@@ -397,25 +399,25 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         // Evaluate the field_to_ec_mac table for `A`.
         let a_ec_mac = self
             .a_ec_mac
-            .evaluate(parent_nonce, &A.into(), &input_mac.A)
+            .evaluate(parent_nonce, &A.into(), &input_mac.A)?
             .1;
 
         // Evaluate the field_to_ec_mac table for `B`.
         let b_ec_mac = self
             .b_ec_mac
-            .evaluate(parent_nonce, &B.into(), &input_mac.B)
+            .evaluate(parent_nonce, &B.into(), &input_mac.B)?
             .1;
 
         // Evaluate the field_to_ec_mac table for `C`.
         let c_ec_mac = self
             .c_ec_mac
-            .evaluate(parent_nonce, &C.into(), &input_mac.C)
+            .evaluate(parent_nonce, &C.into(), &input_mac.C)?
             .1;
 
-        let x_G_mac = self.x_G.evaluate(parent_nonce, &x, &input_mac.x).1;
+        let x_G_mac = self.x_G.evaluate(parent_nonce, &x, &input_mac.x)?.1;
 
         self.input_validity
-            .evaluate(parent_nonce, input, input_mac, &b_ec_mac);
+            .evaluate(parent_nonce, input, input_mac, &b_ec_mac)?;
 
         // Compute the pairing e(A,B) e(C, H_1) on the input A, B, C
         let conditional_reveal_input = self.verifier_key.pairing(input);
@@ -452,6 +454,8 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
                             let mac = (pairing.0 * **AB).into();
                             conditional_reveal_mac.push(mac);
                         });
+                        // This unwrap cannot fail as `conditional_reveal_mac`
+                        // was constructed over a loop 0..KAPPA_B.
                         conditional_reveal_mac
                             .try_into()
                             .unwrap_or_else(|_| panic!())
@@ -467,6 +471,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         // Evaluate the conditional reveal circuit.
         self.conditional_reveal
             .evaluate(&conditional_reveal_input, &conditional_reveal_macs)
+            .map(|result| (result, IdentityMac(PhantomData)))
     }
 }
 
@@ -507,12 +512,16 @@ fn test_valid_groth16() {
         Some(&(secret, gid, verifier_key)),
         &input_mac_key,
     )
+    .unwrap()
     .0;
     aes_ctr_clear_set();
     aes_mitccr_clear_set();
 
     let input_mac = input_mac_key.encode(&input);
-    let output = table.evaluate(&mut Nonce::new(), &input, &input_mac).0;
+    let output = table
+        .evaluate(&mut Nonce::new(), &input, &input_mac)
+        .unwrap()
+        .0;
     aes_ctr_clear_set();
     aes_mitccr_clear_set();
 
@@ -549,13 +558,17 @@ fn test_invalid_groth16() {
         Some(&(secret, gid, verifier_key)),
         &input_mac_key,
     )
+    .unwrap()
     .0;
     aes_ctr_clear_set();
     aes_mitccr_clear_set();
 
     let input_mac = input_mac_key.encode(&input);
 
-    let output = table.evaluate(&mut Nonce::new(), &input, &input_mac).0;
+    let output = table
+        .evaluate(&mut Nonce::new(), &input, &input_mac)
+        .unwrap()
+        .0;
     aes_ctr_clear_set();
     aes_mitccr_clear_set();
 
@@ -591,12 +604,13 @@ fn test_groth16_serde_roundtrip() {
         c: Bn254::pairing(G1Projective::rand(&mut rng), G2Projective::generator()).0,
     };
 
-    let original_table = garble_groth16(SEED, secret, verifier_key, &input_mac_key, gid);
+    let original_table = garble_groth16(SEED, secret, verifier_key, &input_mac_key, gid).unwrap();
 
     let input_mac: InputMac = input_mac_key.encode(&input);
 
     let original_output = original_table
         .evaluate(&mut Nonce::new(), &input, &input_mac)
+        .unwrap()
         .0;
     aes_ctr_clear_set();
     aes_mitccr_clear_set();
@@ -612,11 +626,10 @@ fn test_groth16_serde_roundtrip() {
 
     let file = File::open(file_name).expect("Could not open file");
     let mut reader = BufReader::new(file);
-    let deserialised_table = Table::deserialize_compressed(&mut reader)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
-        .unwrap();
+    let deserialised_table = Table::deserialize_compressed(&mut reader).unwrap();
     let deserialised_output = deserialised_table
         .evaluate(&mut Nonce::new(), &input, &input_mac)
+        .unwrap()
         .0;
     aes_ctr_clear_set();
     aes_mitccr_clear_set();

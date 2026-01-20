@@ -7,6 +7,7 @@
 //! Solve dlog of y wrt z = r * P will return phi as long as gcd(h, 6) = 1,
 //! where h is the cofactor
 
+use std::any::type_name;
 use std::marker::PhantomData;
 
 use ark_bn254::{Fq, Fr, g2};
@@ -20,7 +21,8 @@ use crate::garble::groth16_verifier::KAPPA_B;
 use crate::garble::{Circuit, conditional_reveal};
 use crate::mac::endo::{EndoScalar, IteratedEndoMac};
 use crate::mac::{IdentityMac, IdentityMacKey};
-use crate::utils::unwrap_single;
+use crate::utils::error::{EvalError, GarbleError};
+use crate::utils::try_unwrap_single;
 
 type Input = Affine<g2::Config>;
 type InputMac = IteratedEndoMac<g2::Config, KAPPA_B>;
@@ -40,8 +42,11 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         _rng: &mut StdRng,
         aux: Option<&Self::Aux>,
         input_mac_key: &<InputMac as crate::mac::Mac<Input>>::Key,
-    ) -> (Self, <IdentityMac<Output> as crate::mac::Mac<Output>>::Key) {
-        let secret = *aux.unwrap();
+    ) -> Result<(Self, <IdentityMac<Output> as crate::mac::Mac<Output>>::Key), GarbleError> {
+        let secret = *aux.ok_or(GarbleError::AuxError(
+            type_name::<Self::Aux>(),
+            type_name::<Self>(),
+        ))?;
         let enc_s = secret
             + conditional_reveal::Table::<KAPPA_B>::hash_packed_phis(
                 input_mac_key.iter().map(|key| key.phi.clone()),
@@ -55,10 +60,12 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
 
         let table = Self {
             enc_s,
+            // This unwrap cannot fail since `input_mac_key` is a fixed array
+            // of size `KAPPA_B`.
             r_ks: r_ks.try_into().unwrap(),
         };
 
-        (table, IdentityMacKey)
+        Ok((table, IdentityMacKey))
     }
 
     fn evaluate(
@@ -66,7 +73,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         _parent_nonce: &mut super::Nonce,
         input: &Input,
         input_mac: &InputMac,
-    ) -> (Output, IdentityMac<Output>) {
+    ) -> Result<(Output, IdentityMac<Output>), EvalError> {
         // For each possible value of `phi`, compute [r * phi] P
         let phis = EndoScalar::<g2::Config>::iter();
         let r_phi_P: Vec<_> = phis
@@ -75,7 +82,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
             .collect();
 
         if r_phi_P.iter().all(|point| point.is_zero()) {
-            return (Fq::ZERO, IdentityMac(PhantomData));
+            return Ok((Fq::ZERO, IdentityMac(PhantomData)));
         }
 
         let mut recovered_phis = Vec::with_capacity(KAPPA_B);
@@ -94,7 +101,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
                     |mac: Affine<g2::Config>| r_phi_P.iter().position(|&x| x == mac);
 
                 // This could fail to decode in at most one position
-                let phi = unwrap_single(
+                let phi = try_unwrap_single(
                     [mac_minus_r_k, neg_mac_minus_r_k]
                         .iter()
                         .map(|&mac| find_position(mac)),
@@ -105,16 +112,17 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         let phis = if recovered_phis.iter().all(Option::is_some) {
             recovered_phis
                 .iter()
+                // This unwrap cannot fail because each idx is Some(usize)
                 .map(|&idx| phis[idx.unwrap()].clone())
                 .collect()
         } else {
-            EndoScalar::<g2::Config>::decode(&recovered_phis)
+            EndoScalar::<g2::Config>::decode(&recovered_phis)?
         };
 
         // Recover the secret as the pow_6_lincomb of the phis.
         let s = self.enc_s - conditional_reveal::Table::<KAPPA_B>::hash_packed_phis(phis);
 
-        (s, IdentityMac(PhantomData))
+        Ok((s, IdentityMac(PhantomData)))
     }
 }
 
@@ -139,9 +147,14 @@ fn test_g2_subgroup_check() {
     let input_mac_key = <[EndoMacKey<g2::Config>; KAPPA_B]>::random_key(&mut rng);
     let input_mac = input_mac_key.encode(&input);
 
-    let table = Table::garble(&mut Nonce::new(), &mut rng, Some(&secret), &input_mac_key).0;
+    let table = Table::garble(&mut Nonce::new(), &mut rng, Some(&secret), &input_mac_key)
+        .unwrap()
+        .0;
 
-    let output = table.evaluate(&mut Nonce::new(), &input, &input_mac).0;
+    let output = table
+        .evaluate(&mut Nonce::new(), &input, &input_mac)
+        .unwrap()
+        .0;
 
     assert_eq!(output, secret);
 }
@@ -246,7 +259,7 @@ fn test_g2_subgroup_check_decoding_error() {
         {
             // B = 2 omega^2 r_K
             // B = (-2 / -omega) r_K
-            // assert phi(B) + psi(B) == -2 r_K
+            // Check that phi(B) + psi(B) == -2 r_K
             assert_eq!(
                 phi.endo(B) + psi.endo(B),
                 -r_K.mul_bigint(ark_ff::BigInt::<1>::from(2u8))
@@ -277,9 +290,14 @@ fn test_g2_subgroup_check_decoding_error() {
 
     let input_mac = input_mac_key.encode(&input);
 
-    let table = Table::garble(&mut Nonce::new(), &mut rng, Some(&secret), &input_mac_key).0;
+    let table = Table::garble(&mut Nonce::new(), &mut rng, Some(&secret), &input_mac_key)
+        .unwrap()
+        .0;
 
-    let output = table.evaluate(&mut Nonce::new(), &input, &input_mac).0;
+    let output = table
+        .evaluate(&mut Nonce::new(), &input, &input_mac)
+        .unwrap()
+        .0;
 
     assert_eq!(output, secret);
 }

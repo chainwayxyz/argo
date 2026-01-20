@@ -50,7 +50,8 @@ where
                 &mut rng,
                 Some(&(is_full, output_mac_key.clone())),
                 &input_mac_key,
-            );
+            )
+            .unwrap();
         })
     });
     garble_group.finish();
@@ -61,6 +62,7 @@ where
         Some(&(is_full, output_mac_key.clone())),
         &input_mac_key,
     )
+    .unwrap()
     .0;
 
     let input_mac = input_mac_key.encode(&input);
@@ -68,10 +70,18 @@ where
     let mut evaluate_group = c.benchmark_group("field_mac_to_ec_mac_evaluate");
     evaluate_group.sample_size(100);
     evaluate_group.bench_function("evaluate", |b| {
-        b.iter(|| table.evaluate(&mut Nonce::new(), &input, &input_mac).0)
+        b.iter(|| {
+            table
+                .evaluate(&mut Nonce::new(), &input, &input_mac)
+                .unwrap()
+                .0
+        })
     });
 
-    let evaluated_output_mac = table.evaluate(&mut Nonce::new(), &input, &input_mac).1;
+    let evaluated_output_mac = table
+        .evaluate(&mut Nonce::new(), &input, &input_mac)
+        .unwrap()
+        .1;
     let expected_output_mac = output_mac_key.encode(&input_point);
 
     for (expected, evaluated) in expected_output_mac.iter().zip(evaluated_output_mac.iter()) {

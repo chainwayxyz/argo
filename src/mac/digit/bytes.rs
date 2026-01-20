@@ -15,6 +15,7 @@ use crate::{
     utils::{
         aes_hash::aes_ctr::AesCtr,
         bits::{FromBits, NumBits, ToBits},
+        error::GarbleError,
         group::FromLeBytesModOrder,
     },
 };
@@ -59,6 +60,7 @@ where
                 .zip(mac.iter())
                 .map(|(key, mac)| G::Scalar::from(key.decode(mac))),
         )
+        .unwrap()
     }
 
     fn random_key(rng: &mut StdRng) -> Self {
@@ -84,20 +86,20 @@ where
         dst: Option<&[u8; 16]>,
         parent_nonce: &Nonce,
         phi: &G,
-    ) -> super::group::DigitMacKey<G> {
+    ) -> Result<super::group::DigitMacKey<G>, GarbleError> {
         let mut group_mac_keys = Vec::with_capacity(self.len());
 
-        self.iter().for_each(|input_key| {
+        for input_key in self.iter() {
             let key = <Bit16ByteMacKey as DeriveOutputMacKey<
                 AesCtr,
                 bool,
                 bool,
                 Bit16ByteMac,
                 BitGroupMac<G>,
-            >>::derive_output_mac_key(input_key, dst, parent_nonce, phi);
+            >>::derive_output_mac_key(input_key, dst, parent_nonce, phi)?;
             group_mac_keys.push(key);
-        });
+        }
 
-        group_mac_keys.into()
+        Ok(group_mac_keys.into())
     }
 }

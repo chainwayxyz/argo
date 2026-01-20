@@ -26,7 +26,7 @@
 //!    mac_left ^ mac_right = input_mac_key.left.phi ^ hash(input_mac_key.right.encode(0)),
 //!    which recovers the MAC of 1 under output_mac_key.
 
-use std::marker::PhantomData;
+use std::{any::type_name, marker::PhantomData};
 
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::rngs::StdRng;
@@ -43,7 +43,10 @@ use crate::{
         binary::{And, BinaryInput, BinaryInputMac, BinaryInputMacKey, BitMac, BitMacKey},
         bit::bytes::{Bit16ByteMac, Bit16ByteMacKey},
     },
-    utils::aes_hash::{Hash, aes_mitccr::AesMiTCCR},
+    utils::{
+        aes_hash::{Hash, aes_mitccr::AesMiTCCR},
+        error::{EvalError, GarbleError},
+    },
 };
 
 pub(crate) type InputMac = BinaryInputMac<And>;
@@ -68,10 +71,13 @@ impl Circuit<Input, InputMac, bool, OutputMac> for Table {
         rng: &mut StdRng,
         aux: Option<&Self::Aux>,
         input_mac_key: &InputMacKey,
-    ) -> (Self, OutputMacKey) {
+    ) -> Result<(Self, OutputMacKey), GarbleError> {
         let mut nonce = parent_nonce.fork();
 
-        let gid = *aux.unwrap();
+        let gid = *aux.ok_or(GarbleError::AuxError(
+            type_name::<Self::Aux>(),
+            type_name::<Self>(),
+        ))?;
 
         // Bit adaptor table mapping from a MAC under input_mac_key.right to a
         // MAC under a mac_key s.t.
@@ -88,18 +94,12 @@ impl Circuit<Input, InputMac, bool, OutputMac> for Table {
                 phi: input_mac_key.left.k,
             };
 
-            bit_adaptor::Table::garble(&mut nonce, rng, Some(&aux), &input_mac_key.right.key)
+            bit_adaptor::Table::garble(&mut nonce, rng, Some(&aux), &input_mac_key.right.key)?
         };
 
         output_mac_key.phi = input_mac_key.left.phi;
 
-        (
-            Self { gid, bit_adaptor },
-            OutputMacKey {
-                key: output_mac_key,
-                _marker: PhantomData,
-            },
-        )
+        Ok((Self { gid, bit_adaptor }, output_mac_key.into()))
     }
 
     fn evaluate(
@@ -107,7 +107,7 @@ impl Circuit<Input, InputMac, bool, OutputMac> for Table {
         parent_nonce: &mut Nonce,
         input: &Input,
         input_mac: &InputMac,
-    ) -> (bool, OutputMac) {
+    ) -> Result<(bool, OutputMac), EvalError> {
         let mut nonce = parent_nonce.fork();
 
         let mac_left = if input.right() {
@@ -126,7 +126,7 @@ impl Circuit<Input, InputMac, bool, OutputMac> for Table {
             // to decrypt the mac_right, to get
             // input_mac_key.left.k ^ hash(input_mac_key.right.encode(0))
             self.bit_adaptor
-                .evaluate(&mut nonce, &input.right(), &input_mac.right())
+                .evaluate(&mut nonce, &input.right(), &input_mac.right())?
                 .1
         } else {
             // If input.right = 0, derive mac_right by hashing input_mac.right
@@ -138,7 +138,7 @@ impl Circuit<Input, InputMac, bool, OutputMac> for Table {
             hash.into()
         };
 
-        (input.and(), mac_left ^ mac_right.into())
+        Ok((input.and(), mac_left ^ mac_right.into()))
     }
 }
 
@@ -161,10 +161,13 @@ fn test_and_circuit() {
         let input_mac = input_mac_key.encode(&input);
 
         let (circuit, output_mac_key) =
-            Table::garble(&mut Nonce::new(), &mut rng, Some(&gid), &input_mac_key);
+            Table::garble(&mut Nonce::new(), &mut rng, Some(&gid), &input_mac_key).unwrap();
         clear_set();
 
-        let output_mac = circuit.evaluate(&mut Nonce::new(), &input, &input_mac).1;
+        let output_mac = circuit
+            .evaluate(&mut Nonce::new(), &input, &input_mac)
+            .unwrap()
+            .1;
         clear_set();
 
         let output = input.and();

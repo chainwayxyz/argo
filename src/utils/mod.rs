@@ -15,7 +15,9 @@ pub(crate) mod aes_hash;
 /// Serialization and deserialization
 pub(crate) mod serde;
 
-pub(crate) fn unwrap_single<T>(iter: impl Iterator<Item = Option<T>>) -> Option<T> {
+/// In an iterator of `Option<T>`, if there is only a single `Some(T)` value,
+/// return `Some(T)`; otherwise, return `None`.
+pub(crate) fn try_unwrap_single<T>(iter: impl Iterator<Item = Option<T>>) -> Option<T> {
     let mut flattened = iter.flatten();
 
     match (flattened.next(), flattened.next()) {

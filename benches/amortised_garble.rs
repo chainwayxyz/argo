@@ -38,7 +38,7 @@ fn amortised_garble(c: &mut Criterion) {
                         let secret = Fq::rand(&mut rng);
                         let gid = GID::random(&mut rng);
 
-                        garble_groth16(seed, secret, verifier_key, &input_mac_key, gid);
+                        garble_groth16(seed, secret, verifier_key, &input_mac_key, gid).unwrap();
                     }
                 });
         })

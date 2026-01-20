@@ -22,8 +22,13 @@ impl<F: Field> Poly<F> {
         Self(coeffs)
     }
 
-    pub(crate) fn leading_coeff(&self) -> Option<F> {
-        self.0.iter().rev().find(|x| **x != F::ZERO).copied()
+    pub(crate) fn leading_coeff(&self) -> F {
+        self.0
+            .iter()
+            .rev()
+            .find(|x| **x != F::ZERO)
+            .copied()
+            .unwrap_or(F::ZERO)
     }
 
     pub(crate) fn scale(&mut self, scalar: F) {

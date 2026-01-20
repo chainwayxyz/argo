@@ -18,7 +18,7 @@
 //!
 //! Encrypt the secret under the MAC of 0
 
-use std::marker::PhantomData;
+use std::{any::type_name, marker::PhantomData};
 
 use ark_bn254::Fq;
 use ark_ff::{BigInteger, PrimeField};
@@ -40,6 +40,7 @@ use crate::{
     utils::{
         aes_hash::aes_ctr::AesCtr,
         bits::{FromBits, NumBits, ToBits},
+        error::{EvalError, GarbleError},
     },
 };
 
@@ -70,9 +71,12 @@ where
         rng: &mut ark_std::rand::prelude::StdRng,
         aux: Option<&Self::Aux>,
         input_mac_key: &DigitMacKey<F>,
-    ) -> (Self, IdentityMacKey) {
+    ) -> Result<(Self, IdentityMacKey), GarbleError> {
         let mut nonce = parent_nonce.fork();
-        let (secret, gid) = aux.unwrap();
+        let (secret, gid) = aux.ok_or(GarbleError::AuxError(
+            type_name::<Self::Aux>(),
+            type_name::<Self>(),
+        ))?;
 
         let mut phi = [0; 16];
         rng.fill_bytes(&mut phi);
@@ -88,30 +92,28 @@ where
                 .map(|input_mac_key| {
                     bit_adaptor::Table::garble(&mut nonce, rng, Some(&phi), input_mac_key)
                 })
-                .collect()
+                .collect::<Result<Vec<_>, _>>()? // Collect Result first
+                .into_iter()
+                .unzip()
         };
 
         let mut output_mac_key = zero_mac_key;
         let mut gates = Vec::with_capacity(input_mac_key.len());
 
-        p_bits
-            .iter()
-            .zip(adaptors.1.iter())
-            .for_each(|(p, x_mac_key)| {
-                let p_mac_key = if *p { one_mac_key } else { zero_mac_key };
-                let input_mac_key = gate::InputMacKey {
-                    x: *x_mac_key,
-                    p: p_mac_key,
-                    a: output_mac_key,
-                };
+        for (p, x_mac_key) in p_bits.iter().zip(adaptors.1.iter()) {
+            let p_mac_key = if *p { one_mac_key } else { zero_mac_key };
+            let input_mac_key = gate::InputMacKey {
+                x: *x_mac_key,
+                p: p_mac_key,
+                a: output_mac_key,
+            };
 
-                let (gate, mac_key) =
-                    gate::Table::garble(&mut nonce, rng, Some(gid), &input_mac_key);
+            let (gate, mac_key) = gate::Table::garble(&mut nonce, rng, Some(gid), &input_mac_key)?;
 
-                output_mac_key = mac_key;
+            output_mac_key = mac_key;
 
-                gates.push(gate);
-            });
+            gates.push(gate);
+        }
 
         let enc_s = {
             let mac_false = output_mac_key.encode(&false);
@@ -130,7 +132,7 @@ where
             _marker: PhantomData,
         };
 
-        (table, IdentityMacKey)
+        Ok((table, IdentityMacKey))
     }
 
     fn evaluate(
@@ -138,53 +140,50 @@ where
         parent_nonce: &mut crate::garble::Nonce,
         input: &F,
         input_mac: &DigitMac<F>,
-    ) -> (Fq, IdentityMac<Fq>) {
+    ) -> Result<(Fq, IdentityMac<Fq>), EvalError> {
         let mut nonce = parent_nonce.fork();
 
         let p_bits = F::MODULUS.to_bits_le();
         let input_bits = input.to_bits();
 
         let mut x_mac = Vec::with_capacity(input_bits.len());
-        self.adaptors
+        for ((adaptor, input), input_mac) in self
+            .adaptors
             .iter()
             .zip(input_bits.iter())
             .zip(input_mac.iter())
-            .for_each(|((adaptor, input), input_mac)| {
-                let mac = adaptor.evaluate(&mut nonce, input, input_mac);
-                x_mac.push(mac);
-            });
+        {
+            let mac = adaptor.evaluate(&mut nonce, input, input_mac)?;
+            x_mac.push(mac);
+        }
 
         let mut output = false;
         let mut output_mac = self.zero_mac;
-        self.gates
-            .iter()
-            .zip(p_bits.iter())
-            .zip(x_mac)
-            .for_each(|((gate, p), x)| {
-                let input = gate::Input {
-                    x: x.0,
-                    p: *p,
-                    a: output,
-                };
+        for ((gate, p), x) in self.gates.iter().zip(p_bits.iter()).zip(x_mac) {
+            let input = gate::Input {
+                x: x.0,
+                p: *p,
+                a: output,
+            };
 
-                let input_mac = gate::InputMac {
-                    x: x.1,
-                    p: if *p { self.one_mac } else { self.zero_mac },
-                    a: output_mac,
-                };
+            let input_mac = gate::InputMac {
+                x: x.1,
+                p: if *p { self.one_mac } else { self.zero_mac },
+                a: output_mac,
+            };
 
-                let (res, res_mac) = gate.evaluate(&mut nonce, &input, &input_mac);
+            let (res, res_mac) = gate.evaluate(&mut nonce, &input, &input_mac)?;
 
-                output = res;
-                output_mac = res_mac;
-            });
+            output = res;
+            output_mac = res_mac;
+        }
 
         let secret = {
             let pad: Fq = AesCtr::hash_to_field(*output_mac, &nonce);
             self.enc_s - pad
         };
 
-        (secret, IdentityMac(PhantomData))
+        Ok((secret, IdentityMac(PhantomData)))
     }
 }
 
@@ -216,11 +215,15 @@ where
         Some(&(secret, gid)),
         &input_mac_key,
     )
+    .unwrap()
     .0;
     aes_ctr_clear_set();
     aes_mitccr_clear_set();
 
-    let output = table.evaluate(&mut Nonce::new(), input, &input_mac).0;
+    let output = table
+        .evaluate(&mut Nonce::new(), input, &input_mac)
+        .unwrap()
+        .0;
     aes_ctr_clear_set();
     aes_mitccr_clear_set();
 

@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 use ark_bn254::{Fq, Fq2, Fr, G2Affine, g1, g2};
 use ark_ff::{AdditiveGroup, Field};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
@@ -14,10 +12,14 @@ use crate::{
         groth16_verifier::{GID, Input, InputMac, KAPPA_B},
     },
     mac::{
-        IdentityMac, IdentityMacKey, IteratedMac,
+        IteratedMac,
         endo::{EndoMac, EndoMacKey},
     },
-    utils::{bits::NumBits, group::is_valid},
+    utils::{
+        bits::NumBits,
+        error::{EvalError, GarbleError},
+        group::is_valid,
+    },
 };
 
 #[derive(CanonicalSerialize, CanonicalDeserialize)]
@@ -48,33 +50,34 @@ pub(crate) struct Aux {
     pub(super) b_ec_mac_key: Box<[EndoMacKey<g2::Config>; KAPPA_B]>,
 }
 
+// TODO refactor to use Circuit trait?
 impl Table {
     pub(crate) fn garble(
         parent_nonce: &mut crate::garble::Nonce,
         rng: &mut ark_std::rand::prelude::StdRng,
         aux: &Aux,
         input_mac_key: &<InputMac as crate::mac::Mac<Input>>::Key,
-    ) -> (Self, <IdentityMac<Fq> as crate::mac::Mac<Fq>>::Key) {
+    ) -> Result<Self, GarbleError> {
         let Aux {
             secret,
             gid,
             b_ec_mac_key,
         } = aux;
 
-        let a_range_check = [&input_mac_key.A.x, &input_mac_key.A.y]
-            .iter()
-            .map(|input_mac_key| {
-                less_than::Table::<Fq>::garble(
-                    parent_nonce,
-                    rng,
-                    Some(&(*secret, *gid)),
-                    input_mac_key,
-                )
-                .0
-            })
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap();
+        let mut a_range_check = Vec::with_capacity(2);
+        for input_mac_key in [&input_mac_key.A.x, &input_mac_key.A.y].iter() {
+            let table = less_than::Table::<Fq>::garble(
+                parent_nonce,
+                rng,
+                Some(&(*secret, *gid)),
+                input_mac_key,
+            )?
+            .0;
+            a_range_check.push(table);
+        }
+        // This unwrap cannot fail because `input_mac_key` is a fixed array of
+        // length 2.
+        let a_range_check = a_range_check.try_into().unwrap();
 
         // Garbling table to check that `A` is a valid G1 curve point.
         // This table leaks `secret` if `A` is not a valid curve point.
@@ -84,31 +87,31 @@ impl Table {
             Some(secret),
             // Input MAC key for the (x, y) coordinates of `A`
             &input_mac_key.A,
-        )
+        )?
         .0;
 
-        let b_range_check = {
+        let mut b_range_check = Vec::with_capacity(4);
+        {
             let x0_bits = input_mac_key.B.x[..Fq::num_bits() as usize].to_vec().into();
             let x1_bits = input_mac_key.B.x[Fq::num_bits() as usize..].to_vec().into();
 
             let y0_bits = input_mac_key.B.y[..Fq::num_bits() as usize].to_vec().into();
             let y1_bits = input_mac_key.B.y[Fq::num_bits() as usize..].to_vec().into();
 
-            [x0_bits, x1_bits, y0_bits, y1_bits]
-                .iter()
-                .map(|input_mac_key| {
-                    less_than::Table::<Fq>::garble(
-                        parent_nonce,
-                        rng,
-                        Some(&(*secret, *gid)),
-                        input_mac_key,
-                    )
-                    .0
-                })
-                .collect::<Vec<_>>()
-                .try_into()
-                .unwrap()
+            for input_mac_key in [x0_bits, x1_bits, y0_bits, y1_bits].iter() {
+                let table = less_than::Table::<Fq>::garble(
+                    parent_nonce,
+                    rng,
+                    Some(&(*secret, *gid)),
+                    input_mac_key,
+                )?
+                .0;
+                b_range_check.push(table);
+            }
         };
+        // This unwrap cannot fail because `input_mac_key` is a fixed array of
+        // length 4.
+        let b_range_check = b_range_check.try_into().unwrap();
 
         // Garbling table to check that `B` is a valid curve point.
         // This table leaks `secret` if `B` is not a valid curve point.
@@ -118,28 +121,28 @@ impl Table {
             Some(&Fq2::from_base_prime_field(*secret)),
             // Input MAC key for the (x, y) coordinates of `B`
             &input_mac_key.B,
-        )
+        )?
         .0;
 
         // Garbling table to check that `B` is in the G2 subgroup.
         // This table leaks `secret` if `B` is not in the G2 subgroup.
         let b_g2_check =
-            g2_subgroup_check::Table::garble(parent_nonce, rng, Some(secret), b_ec_mac_key).0;
+            g2_subgroup_check::Table::garble(parent_nonce, rng, Some(secret), b_ec_mac_key)?.0;
 
-        let c_range_check = [&input_mac_key.C.x, &input_mac_key.C.y]
-            .iter()
-            .map(|input_mac_key| {
-                less_than::Table::<Fq>::garble(
-                    parent_nonce,
-                    rng,
-                    Some(&(*secret, *gid)),
-                    input_mac_key,
-                )
-                .0
-            })
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap();
+        let mut c_range_check = Vec::with_capacity(2);
+        for input_mac_key in [&input_mac_key.C.x, &input_mac_key.C.y].iter() {
+            let table = less_than::Table::<Fq>::garble(
+                parent_nonce,
+                rng,
+                Some(&(*secret, *gid)),
+                input_mac_key,
+            )?
+            .0;
+            c_range_check.push(table);
+        }
+        // This unwrap cannot fail because `input_mac_key` is a fixed array of
+        // length 2.
+        let c_range_check = c_range_check.try_into().unwrap();
 
         // Garbling table to check that `C` is a valid G1 curve point.
         // This table leaks `secret` if `C` is not a valid curve point.
@@ -149,7 +152,7 @@ impl Table {
             Some(secret),
             // Input MAC key for the (x, y) coordinates of `C`
             &input_mac_key.C,
-        )
+        )?
         .0;
 
         // Garbling table to check `x` is a valid Fr element.
@@ -159,7 +162,7 @@ impl Table {
             rng,
             Some(&(*secret, *gid)),
             &input_mac_key.x,
-        )
+        )?
         .0;
 
         let table = Self {
@@ -174,7 +177,7 @@ impl Table {
             gid: *gid,
         };
 
-        (table, IdentityMacKey)
+        Ok(table)
     }
 
     pub(crate) fn evaluate(
@@ -183,7 +186,7 @@ impl Table {
         input: &Input,
         input_mac: &InputMac,
         b_ec_mac: &IteratedMac<G2Affine, EndoMac<g2::Config>, KAPPA_B>,
-    ) -> (Fq, IdentityMac<Fq>) {
+    ) -> Result<Fq, EvalError> {
         // The Groth16 input (A, B, C).
         let Input { A, B, C, x } = *input;
 
@@ -198,9 +201,9 @@ impl Table {
                 .zip(input_macs.iter())
                 .zip(self.a_range_check.iter())
             {
-                let secret = table.evaluate(parent_nonce, input, input_mac).0;
+                let secret = table.evaluate(parent_nonce, input, input_mac)?.0;
                 if !is_valid(*input) {
-                    return (secret, IdentityMac(PhantomData));
+                    return Ok(secret);
                 }
             }
         }
@@ -209,11 +212,11 @@ impl Table {
         // `secret` if `A` is not a valid curve point.
         let a_curve_check = self
             .a_curve_check
-            .evaluate(parent_nonce, &A.into(), &input_mac.A)
+            .evaluate(parent_nonce, &A.into(), &input_mac.A)?
             .0;
         // If `A` is not a valid curve point, return `secret` early
         if !a_curve_check.is_zero() {
-            return (a_curve_check, IdentityMac(PhantomData));
+            return Ok(a_curve_check);
         }
 
         // Checks that B.x, B.y are valid Fq elements, returning the `secret`
@@ -232,9 +235,9 @@ impl Table {
                 .zip(input_macs.iter())
                 .zip(self.b_range_check.iter())
             {
-                let secret = table.evaluate(parent_nonce, input, input_mac).0;
+                let secret = table.evaluate(parent_nonce, input, input_mac)?.0;
                 if !is_valid(*input) {
-                    return (secret, IdentityMac(PhantomData));
+                    return Ok(secret);
                 }
             }
         }
@@ -243,20 +246,18 @@ impl Table {
         // `secret` if `B` is not a valid curve point.
         let b_curve_check = self
             .b_curve_check
-            .evaluate(parent_nonce, &B.into(), &input_mac.B)
+            .evaluate(parent_nonce, &B.into(), &input_mac.B)?
             .0;
         // If `B` is not a valid curve point, return `secret` early
         if !b_curve_check.is_zero() {
-            return (
-                b_curve_check.to_base_prime_field_elements().next().unwrap(),
-                IdentityMac(PhantomData),
-            );
+            // This unwrap cannot fail because `b_curve_check` is a nonzero Fq2
+            return Ok(b_curve_check.to_base_prime_field_elements().next().unwrap());
         }
 
-        let b_g2_check = self.b_g2_check.evaluate(parent_nonce, &B, b_ec_mac).0;
+        let b_g2_check = self.b_g2_check.evaluate(parent_nonce, &B, b_ec_mac)?.0;
         // If B is not in the G2 subgroup, return `secret early`
         if !b_g2_check.is_zero() {
-            return (b_g2_check, IdentityMac(PhantomData));
+            return Ok(b_g2_check);
         }
 
         // Checks that C.x, C.y are valid Fq elements, returning the `secret`
@@ -270,9 +271,9 @@ impl Table {
                 .zip(input_macs.iter())
                 .zip(self.c_range_check.iter())
             {
-                let secret = table.evaluate(parent_nonce, input, input_mac).0;
+                let secret = table.evaluate(parent_nonce, input, input_mac)?.0;
                 if !is_valid(*input) {
-                    return (secret, IdentityMac(PhantomData));
+                    return Ok(secret);
                 }
             }
         }
@@ -281,24 +282,24 @@ impl Table {
         // `secret` if `C` is not a valid curve point.
         let c_curve_check = self
             .c_curve_check
-            .evaluate(parent_nonce, &C.into(), &input_mac.C)
+            .evaluate(parent_nonce, &C.into(), &input_mac.C)?
             .0;
         // If `C` is not a valid curve point, return `secret` early
         if !c_curve_check.is_zero() {
-            return (c_curve_check, IdentityMac(PhantomData));
+            return Ok(c_curve_check);
         }
 
         // Evaluate the range check for `x`.
         let x_range_check = self
             .x_range_check
-            .evaluate(parent_nonce, &x, &input_mac.x)
+            .evaluate(parent_nonce, &x, &input_mac.x)?
             .0;
         // If `x` is not a valid Fr element, return `secret` early
         if !is_valid(x) {
-            return (x_range_check, IdentityMac(PhantomData));
+            return Ok(x_range_check);
         }
 
-        (Fq::ZERO, IdentityMac(PhantomData))
+        Ok(Fq::ZERO)
     }
 }
 
@@ -343,7 +344,7 @@ fn test_malformed_curve_points() {
         b_ec_mac_key: Box::new(b_ec_mac_key.clone()),
     };
 
-    let table = Table::garble(&mut Nonce::new(), &mut rng, &aux, &input_mac_key).0;
+    let table = Table::garble(&mut Nonce::new(), &mut rng, &aux, &input_mac_key).unwrap();
     aes_ctr_clear_set();
     aes_mitccr_clear_set();
 
@@ -463,7 +464,7 @@ fn test_malformed_curve_points() {
         let b_ec_mac = b_ec_mac_key.encode(&input.B);
         table
             .evaluate(&mut Nonce::new(), &input, &input_mac, &b_ec_mac)
-            .0
+            .unwrap()
     });
 
     secrets.all(|recovered_secret| recovered_secret == secret);

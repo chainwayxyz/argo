@@ -5,6 +5,8 @@
 //!
 //! This is generic over inputs in Fq and Fq2.
 
+use std::any::type_name;
+
 #[cfg(test)]
 use crate::garble::groth16_verifier::{KAPPA_A, KAPPA_B};
 #[cfg(test)]
@@ -26,6 +28,7 @@ use crate::{
     },
     utils::{
         bits::{FromBits, NumBits, ToBits},
+        error::{EvalError, GarbleError},
         group::FromLeBytesModOrder,
     },
 };
@@ -58,25 +61,34 @@ where
 {
     type Aux = (bool, OutputMacKey<Config, KAPPA>);
 
+    /// # Panics
+    /// 
+    /// Panics if Config::COEFF_A is nonzero.
     fn garble(
         parent_nonce: &mut Nonce,
         rng: &mut StdRng,
         aux: Option<&Self::Aux>,
         input_mac_key: &InputMacKey<F>,
-    ) -> (Self, OutputMacKey<Config, KAPPA>) {
+    ) -> Result<(Self, OutputMacKey<Config, KAPPA>), GarbleError> {
         assert_eq!(Config::COEFF_A, F::ZERO);
 
         let mut nonce = parent_nonce.fork();
-        let (is_full, output_mac_key) = aux.unwrap();
+        let (is_full, output_mac_key) = aux.ok_or(GarbleError::AuxError(
+            type_name::<Self::Aux>(),
+            type_name::<Self>(),
+        ))?;
 
-        fn x_aux<C, F>(mac_key: &EndoMacKey<C>, a2: F) -> ([F; 6], [bool; 6])
+        fn x_aux<C, F>(mac_key: &EndoMacKey<C>, a2: F) -> Result<([F; 6], [bool; 6]), GarbleError>
         where
             C: GLVConfig<BaseField = F>,
             F: Field,
         {
             let B = C::COEFF_B;
             let cs_flags = [true, true, true, true, false, false];
-            let (x, y) = mac_key.k.xy().unwrap();
+            let (x, y) = mac_key
+                .k
+                .xy()
+                .ok_or(GarbleError::InvalidEndoMacKeyK(format!("{:?}", mac_key.k)))?;
             // f(X, Y) = phi * (X, Y) + K = (a X, b Y) + K
             let mut cs = {
                 //  (6, 1)                 # c0
@@ -99,16 +111,19 @@ where
             cs.scale(a2);
             let cs = mac_key.phi.endo_biquadratic_poly(cs);
 
-            (cs.0, cs_flags)
+            Ok((cs.0, cs_flags))
         }
 
-        fn y_aux<C, F>(mac_key: &EndoMacKey<C>, a3: F) -> ([F; 6], [bool; 6])
+        fn y_aux<C, F>(mac_key: &EndoMacKey<C>, a3: F) -> Result<([F; 6], [bool; 6]), GarbleError>
         where
             C: GLVConfig<BaseField = F>,
             F: Field,
         {
             let B = C::COEFF_B;
-            let (x, y) = mac_key.k.xy().unwrap();
+            let (x, y) = mac_key
+                .k
+                .xy()
+                .ok_or(GarbleError::InvalidEndoMacKeyK(format!("{:?}", mac_key.k)))?;
 
             let cs_flags = [true, false, true, true, true, true];
             let mut cs = {
@@ -132,15 +147,18 @@ where
 
             let cs = mac_key.phi.endo_biquadratic_poly(cs);
 
-            (cs.0, cs_flags)
+            Ok((cs.0, cs_flags))
         }
 
-        fn z_aux<C, F>(mac_key: &EndoMacKey<C>, a: F) -> ([F; 6], [bool; 6])
+        fn z_aux<C, F>(mac_key: &EndoMacKey<C>, a: F) -> Result<([F; 6], [bool; 6]), GarbleError>
         where
             C: GLVConfig<BaseField = F>,
             F: Field,
         {
-            let (x, _) = mac_key.k.xy().unwrap();
+            let x = mac_key
+                .k
+                .x()
+                .ok_or(GarbleError::InvalidEndoMacKeyK(format!("{:?}", mac_key.k)))?;
             let cs_flags = [true, true, false, false, false, false];
 
             let mut cs = {
@@ -159,26 +177,28 @@ where
             cs.scale(a);
             let cs = mac_key.phi.endo_biquadratic_poly(cs);
 
-            (cs.0, cs_flags)
+            Ok((cs.0, cs_flags))
         }
 
         let mut x = Vec::with_capacity(output_mac_key.len());
         let mut y = Vec::with_capacity(output_mac_key.len());
         let mut z = Vec::with_capacity(output_mac_key.len());
 
-        output_mac_key.iter().for_each(|key| {
+        for key in output_mac_key.iter() {
             // Generate random scalar `a`
             let a = F::rand(rng);
 
             // Scale z coordinate by `a`
             let z_table =
-                biquadratic::Table::garble(&mut nonce, rng, Some(&z_aux(key, a)), input_mac_key).0;
+                biquadratic::Table::garble(&mut nonce, rng, Some(&z_aux(key, a)?), input_mac_key)?
+                    .0;
             z.push(z_table);
 
             // Scale x coordinate by a^2
             let a2 = a.square();
             let x_table =
-                biquadratic::Table::garble(&mut nonce, rng, Some(&x_aux(key, a2)), input_mac_key).0;
+                biquadratic::Table::garble(&mut nonce, rng, Some(&x_aux(key, a2)?), input_mac_key)?
+                    .0;
             x.push(x_table);
 
             if *is_full {
@@ -187,15 +207,15 @@ where
                 let y_table = biquadratic::Table::garble(
                     &mut nonce,
                     rng,
-                    Some(&y_aux(key, a3)),
+                    Some(&y_aux(key, a3)?),
                     input_mac_key,
-                )
+                )?
                 .0;
                 y.push(y_table);
             }
-        });
+        }
 
-        (
+        Ok((
             Self {
                 is_full: *is_full,
                 x,
@@ -203,7 +223,7 @@ where
                 z,
             },
             output_mac_key.clone(),
-        )
+        ))
     }
 
     fn evaluate(
@@ -211,7 +231,7 @@ where
         parent_nonce: &mut Nonce,
         input: &Input<Config::BaseField>,
         input_mac: &InputMac<Config::BaseField>,
-    ) -> (Affine<Config>, OutputMac<Config, KAPPA>) {
+    ) -> Result<(Affine<Config>, OutputMac<Config, KAPPA>), EvalError> {
         let mut nonce = parent_nonce.fork();
 
         let mut xs = Vec::with_capacity(self.x.len());
@@ -219,27 +239,23 @@ where
         let mut zs = Vec::with_capacity(self.z.len());
 
         let y = if self.is_full {
-            self.y.as_ref().unwrap()
+            self.y.as_ref().ok_or(EvalError::MissingYTablesError)?
         } else {
             &vec![]
         };
 
-        self.x
-            .iter()
-            .zip(self.z.iter())
-            .enumerate()
-            .for_each(|(idx, (x_table, z_table))| {
-                let z_table = z_table.evaluate(&mut nonce, input, input_mac).0;
-                zs.push(z_table);
+        for (idx, (x_table, z_table)) in self.x.iter().zip(self.z.iter()).enumerate() {
+            let z_table = z_table.evaluate(&mut nonce, input, input_mac)?.0;
+            zs.push(z_table);
 
-                let x_table = x_table.evaluate(&mut nonce, input, input_mac).0;
-                xs.push(x_table);
+            let x_table = x_table.evaluate(&mut nonce, input, input_mac)?.0;
+            xs.push(x_table);
 
-                if self.is_full {
-                    let y_table = y[idx].evaluate(&mut nonce, input, input_mac).0;
-                    ys.push(y_table);
-                }
-            });
+            if self.is_full {
+                let y_table = y[idx].evaluate(&mut nonce, input, input_mac)?.0;
+                ys.push(y_table);
+            }
+        }
 
         let mut zs_inv = zs;
         batch_inversion(&mut zs_inv);
@@ -257,6 +273,7 @@ where
                     ys[idx] * z_inv * z2
                 } else {
                     // y^2 = x^3 + b
+                    // FIXME can this unwrap fail?
                     (x.square() * x + Config::COEFF_B).sqrt().unwrap()
                 };
 
@@ -265,9 +282,10 @@ where
                 macs.push(mac);
             });
 
+        // FIXME can this unwrap fail?
         let macs: Box<[EndoMac<Config>; KAPPA]> = macs.try_into().unwrap_or_else(|_| panic!());
 
-        (Affine::new_unchecked(input.x, input.y), macs.into())
+        Ok((Affine::new_unchecked(input.x, input.y), macs.into()))
     }
 }
 
@@ -306,11 +324,13 @@ where
         Some(&(is_full, output_mac_key)),
         &input_mac_key,
     )
+    .unwrap()
     .0;
     clear_set();
 
     let evaluated_output = garbling_table
         .evaluate(&mut Nonce::new(), &input, &input_mac)
+        .unwrap()
         .1;
     clear_set();
 
@@ -383,6 +403,7 @@ where
         Some(&(is_full, output_mac_key)),
         &input_mac_key,
     )
+    .unwrap()
     .0;
     clear_set();
 
@@ -390,6 +411,7 @@ where
 
     let original_output = original_table
         .evaluate(&mut Nonce::new(), &input, &input_mac)
+        .unwrap()
         .0;
     clear_set();
 
@@ -404,11 +426,10 @@ where
 
     let file = File::open(&file_name).expect("Could not open file");
     let mut reader = BufReader::new(file);
-    let deserialised_table = Table::<C, KAPPA>::deserialize_compressed(&mut reader)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
-        .unwrap();
+    let deserialised_table = Table::<C, KAPPA>::deserialize_compressed(&mut reader).unwrap();
     let deserialised_output = deserialised_table
         .evaluate(&mut Nonce::new(), &input, &input_mac)
+        .unwrap()
         .0;
     clear_set();
 

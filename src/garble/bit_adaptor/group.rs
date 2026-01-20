@@ -1,3 +1,5 @@
+use std::any::type_name;
+
 use aes::{Block, cipher::BlockEncrypt};
 use ark_ff::{BigInteger, Field, PrimeField};
 use ark_std::rand::rngs::StdRng;
@@ -17,6 +19,7 @@ use crate::{
     },
     utils::{
         aes_hash::{AES_BLOCK_SIZE, aes_ctr::AesCtr},
+        error::{EvalError, GarbleError},
         group::FromLeBytesModOrder,
     },
 };
@@ -37,11 +40,11 @@ where
         _dst: Option<&[u8; 16]>,
         parent_nonce: &Nonce,
         phi: &G,
-    ) -> GroupMacKey<G> {
+    ) -> Result<GroupMacKey<G>, GarbleError> {
         let mac = self.encode(&false);
         let k = AesCtr::hash_to_field(*mac, parent_nonce);
 
-        GroupMacKey { phi: *phi, k }
+        Ok(GroupMacKey { phi: *phi, k })
     }
 }
 
@@ -59,10 +62,13 @@ where
         _rng: &mut StdRng,
         aux: Option<&Self::Aux>,
         input_mac_key: &Bit16ByteMacKey,
-    ) -> (Self, GroupMacKey<G>) {
+    ) -> Result<(Self, GroupMacKey<G>), GarbleError> {
         let mut nonce = parent_nonce.fork();
         // The chosen `phi` for the output_mac_key.
-        let phi = aux.unwrap();
+        let phi = aux.ok_or(GarbleError::AuxError(
+            type_name::<Self::Aux>(),
+            type_name::<Self>(),
+        ))?;
 
         // The output_mac_key is derived s.t.
         // - output_mac_key.phi = phi, and
@@ -73,22 +79,22 @@ where
             bool,
             Bit16ByteMac,
             BitGroupMac<G>,
-        >>::derive_output_mac_key(input_mac_key, None, &nonce, phi);
+        >>::derive_output_mac_key(input_mac_key, None, &nonce, phi)?;
 
         // We encrypt the encoding of output_mac_key.encode(true), using
         // input_mac_key.encode(true) as the key. This ciphertext is stored
         // in the bit adaptor garbling table.
         let key = input_mac_key.encode(&true);
         let msg = output_mac_key.encode(&true);
-        let ciphertext = key.encrypt(None, &mut nonce, &msg);
+        let ciphertext = key.encrypt(None, &mut nonce, &msg)?;
 
-        (
+        Ok((
             Self {
                 gid: None,
                 ciphertext,
             },
             output_mac_key,
-        )
+        ))
     }
 
     fn evaluate(
@@ -96,7 +102,7 @@ where
         parent_nonce: &mut Nonce,
         input: &bool,
         input_mac: &Bit16ByteMac,
-    ) -> (bool, BitGroupMac<G>) {
+    ) -> Result<(bool, BitGroupMac<G>), EvalError> {
         let mut nonce = parent_nonce.fork();
 
         let output_mac = if !(*input) {
@@ -109,10 +115,10 @@ where
             // If the input is `true`, we have to decrypt the table entry
             // using the `input_mac` as a key, to recover the plaintext
             // `output_mac`.
-            input_mac.decrypt(None, &mut nonce, &self.ciphertext)
+            input_mac.decrypt(None, &mut nonce, &self.ciphertext)?
         };
 
-        (*input, output_mac)
+        Ok((*input, output_mac))
     }
 }
 
@@ -130,7 +136,7 @@ where
         _dst: Option<&[u8]>,
         parent_nonce: &mut Nonce,
         message: &BitGroupMac<G>,
-    ) -> Self::Ciphertext {
+    ) -> Result<Self::Ciphertext, GarbleError> {
         let num_blocks = AesCtr::num_blocks::<G>();
         let total_bytes = num_blocks * AES_BLOCK_SIZE;
 
@@ -165,14 +171,14 @@ where
             }
         }
 
-        ciphertext
+        Ok(ciphertext)
     }
     fn decrypt(
         &self,
         _dst: Option<&[u8]>,
         parent_nonce: &mut Nonce,
         ciphertext: &Self::Ciphertext,
-    ) -> BitGroupMac<G> {
+    ) -> Result<BitGroupMac<G>, EvalError> {
         let num_blocks = AesCtr::num_blocks::<G>();
 
         // Initialise the plaintext as an empty vector with the desired
@@ -199,7 +205,9 @@ where
             .for_each(|(pad, ciph)| *pad ^= ciph);
 
         // Cast the plaintext bytes as a group element to recover output_mac.
-        G::from_random_bytes(&plaintext).unwrap().into()
+        G::from_random_bytes(&plaintext)
+            .ok_or(EvalError::DecryptionError(type_name::<Self>()))
+            .map(|mac| mac.into())
     }
 }
 
@@ -231,7 +239,8 @@ where
                 &mut rng,
                 Some(&phi),
                 &input_mac_key,
-            );
+            )
+            .unwrap();
         clear_set();
 
         let input = Bit16ByteMac::random_input(&mut rng);
@@ -242,6 +251,7 @@ where
 
         let evaluated_output_mac: BitGroupMac<G> = garbling_table
             .evaluate(&mut Nonce::new(), &input, &input_mac)
+            .unwrap()
             .1;
         clear_set();
 

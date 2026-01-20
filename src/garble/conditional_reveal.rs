@@ -3,10 +3,8 @@
 //!
 //! When evaluated on an input != one and its MAC, it returns the `secret`.
 
-use std::marker::PhantomData;
-
 use ark_bn254::{Fq, Fq12, g1::Config as G1Config};
-use ark_ec::{AffineRepr, CurveGroup, PrimeGroup, scalar_mul::glv::GLVConfig};
+use ark_ec::scalar_mul::glv::GLVConfig;
 use ark_ff::{
     AdditiveGroup, BigInteger, Field, Fp12, PrimeField, batch_inversion,
     field_hashers::{DefaultFieldHasher, HashToField},
@@ -18,10 +16,13 @@ use crate::garble::groth16_verifier::reset_preprocessed_vk;
 use crate::{
     garble::groth16_verifier::{self, GarblePreprocessedVk},
     mac::{
-        IdentityMac, IdentityMacKey, MacKey,
+        MacKey,
         endo::{ENDO_SIZE, EndoMacKey, EndoMultGroupMacKey, EndoScalar, IteratedEndoMultGroupMac},
     },
-    utils::unwrap_single,
+    utils::{
+        error::{EvalError, GarbleError},
+        try_unwrap_single,
+    },
 };
 
 /// Input is a single P::TargetField
@@ -43,7 +44,7 @@ impl<const KAPPA: usize> Table<KAPPA> {
         pairing_output_mac_key: &[EndoMultGroupMacKey; KAPPA],
         c_ec_mac_key: &[EndoMacKey<G1Config>; KAPPA],
         x_G_output_mac_key: &[EndoMacKey<G1Config>; KAPPA],
-    ) -> InputMacKey<KAPPA> {
+    ) -> Result<InputMacKey<KAPPA>, GarbleError> {
         let GarblePreprocessedVk {
             h1_target_pow_2,
             h2_target_pow_2,
@@ -56,62 +57,65 @@ impl<const KAPPA: usize> Table<KAPPA> {
         let mut key = Vec::with_capacity(pairing_output_mac_key.len());
 
         // e(A,B) e(C, H_1) = c^{-1}
-        pairing_output_mac_key
+        for ((AB, C), x_G) in pairing_output_mac_key
             .iter()
             .zip(c_ec_mac_key.iter())
             .zip(x_G_output_mac_key.iter())
-            .for_each(|((AB, C), x_G)| {
-                // All these MAC keys use the same phi
-                let phi = C.phi.clone();
+        {
+            // All these MAC keys use the same phi
+            let phi = C.phi.clone();
+            let C_k_scalar = C
+                .k_scalar
+                .ok_or(GarbleError::MissingKScalar("C"))?
+                .into_bigint();
+            let xG_k_scalar = x_G
+                .k_scalar
+                .ok_or(GarbleError::MissingKScalar("x_G"))?
+                .into_bigint();
 
-                // e(G, H1)^{C_k_scalar}
-                let C_k_H1 =
-                    Fq12::pow_with_table(&h1_target_pow_2, C.k_scalar.unwrap().into_bigint())
-                        .unwrap();
+            // e(G, H1)^{C_k_scalar}
+            // This unwrap cannot fail because there are enough
+            // `h1_target_pow_2` for Fr.
+            let C_k_H1 = Fq12::pow_with_table(&h1_target_pow_2, C_k_scalar).unwrap();
+
+            // e(G, H2)^{xG_k_scalar}
+            // This unwrap cannot fail because there are enough
+            // `h1_target_pow_2` for Fr.
+            let xG_k_H2 = Fq12::pow_with_table(&h2_target_pow_2, xG_k_scalar).unwrap();
+
+            // e(C.k, H1) e(xG.k, H2)
+            let k = C_k_H1 * xG_k_H2;
+
+            #[cfg(test)]
+            {
+                use ark_bn254::Bn254;
+                use ark_ec::pairing::Pairing;
+
+                assert_eq!(C_k_H1, Bn254::pairing(C.k, verifier_key.H1).0);
+                assert_eq!(xG_k_H2, Bn254::pairing(x_G.k, verifier_key.H2).0);
+
                 assert_eq!(
-                    ark_bn254::G1Projective::generator() * C.k_scalar.unwrap(),
-                    C.k.into_group()
-                );
-
-                // e(G, H2)^{xG_k_scalar}
-                let xG_k_H2 =
-                    Fq12::pow_with_table(&h2_target_pow_2, x_G.k_scalar.unwrap().into_bigint())
-                        .unwrap();
-                assert_eq!(
-                    (ark_bn254::G1Projective::generator() * x_G.k_scalar.unwrap()).into_affine(),
-                    x_G.k
-                );
-
-                // e(C.k, H1) e(xG.k, H2)
-                let k = C_k_H1 * xG_k_H2;
-
-                #[cfg(test)]
-                {
-                    use ark_bn254::Bn254;
-                    use ark_ec::pairing::Pairing;
-
-                    assert_eq!(C_k_H1, Bn254::pairing(C.k, verifier_key.H1).0);
-                    assert_eq!(xG_k_H2, Bn254::pairing(x_G.k, verifier_key.H2).0);
-
-                    assert_eq!(
-                        k,
-                        Bn254::multi_pairing(
-                            vec![C.k, x_G.k],
-                            vec![verifier_key.H1, verifier_key.H2]
-                        )
+                    k,
+                    Bn254::multi_pairing(vec![C.k, x_G.k], vec![verifier_key.H1, verifier_key.H2])
                         .0
-                    );
-                }
+                );
+            }
 
-                // c^{p^(2phi + 6)} = c^{-p^(2phi)}
-                // This has the effect of multiplying the MAC'd value by c
-                let c_term = phi.endo_frob(&verifier_key.c.inverse().unwrap());
-                let k = k * AB.k * c_term;
+            // c^{p^(2phi + 6)} = c^{-p^(2phi)}
+            // This has the effect of multiplying the MAC'd value by c
+            // This unwrap cannot fail since Fq12::ZERO is not in the
+            // multiplicative subgroup.
+            // FIXME handle incorrectly constructed vk?
+            let c_term = phi.endo_frob(&verifier_key.c.inverse().unwrap());
+            let k = k * AB.k * c_term;
 
-                key.push(EndoMultGroupMacKey { phi, k });
-            });
+            key.push(EndoMultGroupMacKey { phi, k });
+        }
 
-        key.try_into().unwrap_or_else(|_| panic!())
+        // This unwrap cannot fail because `pairing_output_mac_key`,
+        // `c_ec_mac_key`, `x_G_output_mac_key` are fixed arrays of size
+        // `KAPPA`.
+        Ok(key.try_into().unwrap_or_else(|_| panic!()))
     }
 
     pub(crate) fn hash_packed_phis<I, C: GLVConfig>(phis: I) -> Fq
@@ -126,10 +130,10 @@ impl<const KAPPA: usize> Table<KAPPA> {
 }
 
 impl<const KAPPA: usize> Table<KAPPA> {
-    pub(crate) fn garble(enc_s: Fq, input_mac_key: &InputMacKey<KAPPA>) -> (Self, IdentityMacKey) {
+    pub(crate) fn garble(enc_s: Fq, input_mac_key: &InputMacKey<KAPPA>) -> Self {
         let one_mac = input_mac_key.encode(&Fp12::ONE);
 
-        (Self { one_mac, enc_s }, IdentityMacKey)
+        Self { one_mac, enc_s }
     }
 
     /// This method takes in four InputMac's. Each InputMac is a sequence of
@@ -144,7 +148,7 @@ impl<const KAPPA: usize> Table<KAPPA> {
         &self,
         input: &Input,
         input_macs: &[InputMac<KAPPA>],
-    ) -> (Output, IdentityMac<Output>) {
+    ) -> Result<Output, EvalError> {
         let phis = EndoScalar::<G1Config>::iter();
         let input_exp = if *input == Fq12::ONE {
             vec![Fq12::ONE]
@@ -186,7 +190,7 @@ impl<const KAPPA: usize> Table<KAPPA> {
             let find_position = |val: Fq12| input_exp.iter().position(|&x| x == val);
             let input_mac_div_one_slice =
                 input_mac_div_one.iter().map(|mac| find_position(mac[idx]));
-            let phi = unwrap_single(input_mac_div_one_slice);
+            let phi = try_unwrap_single(input_mac_div_one_slice);
 
             recovered_phis.push(phi);
         });
@@ -194,19 +198,21 @@ impl<const KAPPA: usize> Table<KAPPA> {
         let phis = if recovered_phis.iter().all(Option::is_some) {
             recovered_phis
                 .iter()
+                // This unwrap cannot fail because all the recovered `phi`s are
+                // guaranteed to be `Some(usize)` in this `if` branch.
                 .map(|&idx| phis[idx.unwrap()].clone())
                 .collect()
         } else {
-            EndoScalar::<G1Config>::decode(&recovered_phis)
+            EndoScalar::<G1Config>::decode(&recovered_phis)?
         };
 
         if *input == Fq12::ONE && phis.iter().all(|phi| matches!(phi, EndoScalar::Zero(_))) {
-            return (Fq::ZERO, IdentityMac(PhantomData));
+            return Ok(Fq::ZERO);
         }
 
         // Recover the secret using the phis.
-        let s = self.enc_s - Self::hash_packed_phis(phis);
-        (s, IdentityMac(PhantomData))
+        let secret = self.enc_s - Self::hash_packed_phis(phis);
+        Ok(secret)
     }
 }
 
@@ -230,9 +236,9 @@ fn test_conditional_reveal_valid() {
     let enc_s = secret
         + Table::<KAPPA_B>::hash_packed_phis(input_mac_key.iter().map(|key| key.phi.clone()));
 
-    let table = Table::<KAPPA_B>::garble(enc_s, &input_mac_key).0;
+    let table = Table::<KAPPA_B>::garble(enc_s, &input_mac_key);
 
-    let output = table.evaluate(&input, &[input_mac]).0;
+    let output = table.evaluate(&input, &[input_mac]).unwrap();
 
     assert_eq!(output, Fq::ZERO);
 }
@@ -257,9 +263,9 @@ fn test_conditional_reveal_invalid() {
     let enc_s = secret
         + Table::<KAPPA_B>::hash_packed_phis(input_mac_key.iter().map(|key| key.phi.clone()));
 
-    let table = Table::<KAPPA_B>::garble(enc_s, &input_mac_key).0;
+    let table = Table::<KAPPA_B>::garble(enc_s, &input_mac_key);
 
-    let output = table.evaluate(&input, &[input_mac]).0;
+    let output = table.evaluate(&input, &[input_mac]).unwrap();
 
     assert_eq!(output, secret);
 }

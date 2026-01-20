@@ -4,7 +4,7 @@
 use ark_ff::Field;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::rngs::StdRng;
-use std::{collections::BTreeSet, marker::PhantomData};
+use std::{any::type_name, collections::BTreeSet, marker::PhantomData};
 
 use crate::{
     garble::{
@@ -15,6 +15,7 @@ use crate::{
     mac::{IdentityMac, IdentityMacKey, Random},
     utils::{
         bits::{FromBits, NumBits, ToBits},
+        error::{EvalError, GarbleError},
         group::FromLeBytesModOrder,
     },
 };
@@ -139,10 +140,13 @@ where
         rng: &mut StdRng,
         aux: Option<&Self::Aux>,
         input_mac_key: &InputMacKey<F>,
-    ) -> (Self, IdentityMacKey) {
+    ) -> Result<(Self, IdentityMacKey), GarbleError> {
         let mut nonce = parent_nonce.fork();
 
-        let (cs, cs_flags) = aux.unwrap();
+        let (cs, cs_flags) = aux.ok_or(GarbleError::AuxError(
+            type_name::<Self::Aux>(),
+            type_name::<Self>(),
+        ))?;
         let c_prime_indices = Self::c_prime_indices(cs_flags);
 
         let mut rs = [F::ZERO; 11];
@@ -162,13 +166,16 @@ where
             // c'_6
             let table_0 = if c_prime_indices.contains(&6) {
                 let (table, output_mac_key) =
-                    digit_adaptor::Table::garble(&mut nonce, rng, Some(&-rs[4]), &input_mac_key.y);
-                rs[6] = output_mac_key.from_bits_k();
+                    digit_adaptor::Table::garble(&mut nonce, rng, Some(&-rs[4]), &input_mac_key.y)?;
+                rs[6] = output_mac_key.from_bits_k()?;
 
                 Some(table)
             } else {
-                assert_eq!(rs[4], F::ZERO);
-                assert_eq!(rs[6], F::ZERO);
+                #[cfg(test)]
+                {
+                    assert_eq!(rs[4], F::ZERO);
+                    assert_eq!(rs[6], F::ZERO);
+                }
 
                 None
             };
@@ -176,13 +183,16 @@ where
             // c'_8
             let table_1 = if c_prime_indices.contains(&8) {
                 let (table, output_mac_key) =
-                    digit_adaptor::Table::garble(&mut nonce, rng, Some(&-rs[5]), &input_mac_key.y);
-                rs[8] = output_mac_key.from_bits_k();
+                    digit_adaptor::Table::garble(&mut nonce, rng, Some(&-rs[5]), &input_mac_key.y)?;
+                rs[8] = output_mac_key.from_bits_k()?;
 
                 Some(table)
             } else {
-                assert_eq!(rs[5], F::ZERO);
-                assert_eq!(rs[8], F::ZERO);
+                #[cfg(test)]
+                {
+                    assert_eq!(rs[5], F::ZERO);
+                    assert_eq!(rs[8], F::ZERO);
+                }
 
                 None
             };
@@ -194,13 +204,16 @@ where
                     rng,
                     Some(&-(rs[2] + rs[8])),
                     &input_mac_key.y,
-                );
-                rs[10] = output_mac_key.from_bits_k();
+                )?;
+                rs[10] = output_mac_key.from_bits_k()?;
 
                 Some(table)
             } else {
-                assert_eq!(rs[10], F::ZERO);
-                assert_eq!(-(rs[2] + rs[8]), F::ZERO);
+                #[cfg(test)]
+                {
+                    assert_eq!(rs[10], F::ZERO);
+                    assert_eq!(-(rs[2] + rs[8]), F::ZERO);
+                }
 
                 None
             };
@@ -216,13 +229,16 @@ where
             // c'_7
             let table_0 = if c_prime_indices.contains(&7) {
                 let (table, output_mac_key) =
-                    digit_adaptor::Table::garble(&mut nonce, rng, Some(&-rs[3]), &input_mac_key.x);
-                rs[7] = output_mac_key.from_bits_k();
+                    digit_adaptor::Table::garble(&mut nonce, rng, Some(&-rs[3]), &input_mac_key.x)?;
+                rs[7] = output_mac_key.from_bits_k()?;
 
                 Some(table)
             } else {
-                assert_eq!(rs[3], F::ZERO);
-                assert_eq!(rs[7], F::ZERO);
+                #[cfg(test)]
+                {
+                    assert_eq!(rs[3], F::ZERO);
+                    assert_eq!(rs[7], F::ZERO);
+                }
                 None
             };
 
@@ -233,13 +249,16 @@ where
                     rng,
                     Some(&-(rs[1] + rs[6] + rs[7])),
                     &input_mac_key.x,
-                );
-                rs[9] = output_mac_key.from_bits_k();
+                )?;
+                rs[9] = output_mac_key.from_bits_k()?;
 
                 Some(table)
             } else {
-                assert_eq!(rs[9], F::ZERO);
-                assert_eq!(-(rs[1] + rs[6] + rs[7]), F::ZERO);
+                #[cfg(test)]
+                {
+                    assert_eq!(rs[9], F::ZERO);
+                    assert_eq!(-(rs[1] + rs[6] + rs[7]), F::ZERO);
+                }
                 None
             };
             [table_0, table_1]
@@ -255,20 +274,21 @@ where
                 let val = if c_prime_indices.contains(&idx) {
                     Some(*c + r)
                 } else {
+                    #[cfg(test)]
                     assert_eq!(*c + *r, F::ZERO);
                     None
                 };
                 c_primes[idx] = val;
             });
 
-        (
+        Ok((
             Self {
                 c_primes,
                 x_adaptors,
                 y_adaptors,
             },
             IdentityMacKey,
-        )
+        ))
     }
 
     fn evaluate(
@@ -276,7 +296,7 @@ where
         parent_nonce: &mut Nonce,
         input: &Input<F>,
         input_mac: &InputMac<F>,
-    ) -> (F, IdentityMac<F>) {
+    ) -> Result<(F, IdentityMac<F>), EvalError> {
         let mut nonce = parent_nonce.fork();
 
         let [
@@ -288,37 +308,42 @@ where
             c_prime_5,
         ] = self.c_primes;
 
-        let evaluate_x = |table: &digit_adaptor::Table<F>, nonce: &mut Nonce| {
-            let digit_mac = table.evaluate(nonce, &input.x, &input_mac.x).1;
-            let field_elems = digit_mac.iter().map(|mac| **mac);
-            F::from_bits(field_elems)
-        };
+        let evaluate_x =
+            |table: &digit_adaptor::Table<F>, nonce: &mut Nonce| -> Result<F, EvalError> {
+                let (_, mac) = table.evaluate(nonce, &input.x, &input_mac.x)?;
+                mac.try_into_group_mac().map(|mac| *mac)
+            };
 
-        let evaluate_y = |table: &digit_adaptor::Table<F>, nonce: &mut Nonce| {
-            let digit_mac = table.evaluate(nonce, &input.y, &input_mac.y).1;
-            let field_elems = digit_mac.iter().map(|mac| **mac);
-            F::from_bits(field_elems)
-        };
+        let evaluate_y =
+            |table: &digit_adaptor::Table<F>, nonce: &mut Nonce| -> Result<F, EvalError> {
+                let (_, mac) = table.evaluate(nonce, &input.y, &input_mac.y)?;
+                mac.try_into_group_mac().map(|mac| *mac)
+            };
 
         let c_prime_6 = self.y_adaptors[0]
             .as_ref()
-            .map(|table| evaluate_y(table, &mut nonce));
+            .map(|table| evaluate_y(table, &mut nonce))
+            .transpose()?;
 
         let c_prime_8 = self.y_adaptors[1]
             .as_ref()
-            .map(|table| evaluate_y(table, &mut nonce));
+            .map(|table| evaluate_y(table, &mut nonce))
+            .transpose()?;
 
         let c_prime_10 = self.y_adaptors[2]
             .as_ref()
-            .map(|table| evaluate_y(table, &mut nonce));
+            .map(|table| evaluate_y(table, &mut nonce))
+            .transpose()?;
 
         let c_prime_7 = self.x_adaptors[0]
             .as_ref()
-            .map(|table| evaluate_x(table, &mut nonce));
+            .map(|table| evaluate_x(table, &mut nonce))
+            .transpose()?;
 
         let c_prime_9 = self.x_adaptors[1]
             .as_ref()
-            .map(|table| evaluate_x(table, &mut nonce));
+            .map(|table| evaluate_x(table, &mut nonce))
+            .transpose()?;
 
         let c_primes = [
             c_prime_0, c_prime_1, c_prime_2, c_prime_3, c_prime_4, c_prime_5, c_prime_6, c_prime_7,
@@ -327,7 +352,7 @@ where
 
         let coord: F = Self::coord(input, &c_primes);
 
-        (coord, IdentityMac(PhantomData))
+        Ok((coord, IdentityMac(PhantomData)))
     }
 }
 
@@ -358,6 +383,7 @@ where
         Some(&(c_s, cs_flags)),
         &input_mac_key,
     )
+    .unwrap()
     .0;
     clear_set();
 
@@ -368,6 +394,7 @@ where
 
     let evaluated_output = garbling_table
         .evaluate(&mut Nonce::new(), &input, &input_mac)
+        .unwrap()
         .0;
     clear_set();
 

@@ -13,6 +13,7 @@ use crate::{
         binary::{self, And, BinaryInput, BinaryInputMac, Xor},
         bit::bytes::{Bit16ByteMac, Bit16ByteMacKey},
     },
+    utils::error::{EvalError, GarbleError},
 };
 
 /// (x + p) (a + p) + a
@@ -105,7 +106,7 @@ impl Circuit<Input, InputMac, bool, Bit16ByteMac> for Table {
         rng: &mut ark_std::rand::prelude::StdRng,
         aux: Option<&Self::Aux>,
         input_mac_key: &<InputMac as Mac<Input>>::Key,
-    ) -> (Self, <Bit16ByteMac as Mac<bool>>::Key) {
+    ) -> Result<(Self, <Bit16ByteMac as Mac<bool>>::Key), GarbleError> {
         let mut nonce = parent_nonce.fork();
 
         // (x + p)
@@ -115,7 +116,7 @@ impl Circuit<Input, InputMac, bool, Bit16ByteMac> for Table {
                 right: input_mac_key.p.into(),
             };
 
-            xor::Table::garble(&mut nonce, rng, None, &input_mac_key)
+            xor::Table::garble(&mut nonce, rng, None, &input_mac_key)?
         };
 
         // (a + p)
@@ -125,7 +126,7 @@ impl Circuit<Input, InputMac, bool, Bit16ByteMac> for Table {
                 right: input_mac_key.p.into(),
             };
 
-            xor::Table::garble(&mut nonce, rng, None, &input_mac_key)
+            xor::Table::garble(&mut nonce, rng, None, &input_mac_key)?
         };
 
         // x_p & a_p
@@ -135,7 +136,7 @@ impl Circuit<Input, InputMac, bool, Bit16ByteMac> for Table {
                 right: (*ap_output_mac_key).into(),
             };
 
-            and::Table::garble(&mut nonce, rng, aux, &input_mac_key)
+            and::Table::garble(&mut nonce, rng, aux, &input_mac_key)?
         };
 
         // xp_ap XOR a
@@ -145,7 +146,7 @@ impl Circuit<Input, InputMac, bool, Bit16ByteMac> for Table {
                 right: input_mac_key.a.into(),
             };
 
-            xor::Table::garble(parent_nonce, rng, None, &input_mac_key)
+            xor::Table::garble(parent_nonce, rng, None, &input_mac_key)?
         };
 
         let table = Self {
@@ -155,7 +156,7 @@ impl Circuit<Input, InputMac, bool, Bit16ByteMac> for Table {
             output,
         };
 
-        (table, *output_mac_key)
+        Ok((table, *output_mac_key))
     }
 
     fn evaluate(
@@ -163,36 +164,36 @@ impl Circuit<Input, InputMac, bool, Bit16ByteMac> for Table {
         parent_nonce: &mut Nonce,
         input: &Input,
         input_mac: &InputMac,
-    ) -> (bool, Bit16ByteMac) {
+    ) -> Result<(bool, Bit16ByteMac), EvalError> {
         let mut nonce = parent_nonce.fork();
 
         let (x_p, xp_mac) = {
             let input = BinaryInput::new(input.x, input.p);
             let input_mac = BinaryInputMac::new(input_mac.x.into(), input_mac.p.into());
-            self.x_p.evaluate(&mut nonce, &input, &input_mac)
+            self.x_p.evaluate(&mut nonce, &input, &input_mac)?
         };
 
         let (a_p, ap_mac) = {
             let input = BinaryInput::new(input.a, input.p);
             let input_mac = BinaryInputMac::new(input_mac.a.into(), input_mac.p.into());
-            self.a_p.evaluate(&mut nonce, &input, &input_mac)
+            self.a_p.evaluate(&mut nonce, &input, &input_mac)?
         };
 
         let (xp_ap, xp_ap_mac) = {
             let input = BinaryInput::new(x_p, a_p);
             let input_mac = BinaryInputMac::<And>::new((*xp_mac).into(), (*ap_mac).into());
 
-            self.xp_ap.evaluate(&mut nonce, &input, &input_mac)
+            self.xp_ap.evaluate(&mut nonce, &input, &input_mac)?
         };
 
         let (output, output_mac) = {
             let input = BinaryInput::new(xp_ap, input.a);
             let input_mac = BinaryInputMac::<Xor>::new((*xp_ap_mac).into(), input_mac.a.into());
 
-            self.output.evaluate(&mut nonce, &input, &input_mac)
+            self.output.evaluate(&mut nonce, &input, &input_mac)?
         };
 
-        (output, *output_mac)
+        Ok((output, *output_mac))
     }
 }
 
@@ -216,10 +217,13 @@ fn test_gate() {
         let input_mac = input_mac_key.encode(&input);
 
         let (circuit, output_mac_key) =
-            Table::garble(&mut Nonce::new(), &mut rng, Some(&gid), &input_mac_key);
+            Table::garble(&mut Nonce::new(), &mut rng, Some(&gid), &input_mac_key).unwrap();
         clear_set();
 
-        let output_mac = circuit.evaluate(&mut Nonce::new(), &input, &input_mac).1;
+        let output_mac = circuit
+            .evaluate(&mut Nonce::new(), &input, &input_mac)
+            .unwrap()
+            .1;
         clear_set();
 
         let output = input.output();

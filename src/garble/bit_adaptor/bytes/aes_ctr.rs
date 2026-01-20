@@ -1,6 +1,8 @@
 //! Adaptor table using fixed-key AesCtr as the hash function. This should only
 //! be used when the input MAC key has a unique random `phi`.
 
+use std::any::type_name;
+
 use ark_std::rand::rngs::StdRng;
 
 use crate::{
@@ -12,7 +14,10 @@ use crate::{
         Encrypt, MacKey,
         bit::bytes::{Bit16ByteMac, Bit16ByteMacKey},
     },
-    utils::aes_hash::{Hash, aes_ctr::AesCtr},
+    utils::{
+        aes_hash::{Hash, aes_ctr::AesCtr},
+        error::{EvalError, GarbleError},
+    },
 };
 
 impl<Mac1, Mac2> Encrypt<AesCtr, Mac1> for Mac2
@@ -27,7 +32,7 @@ where
         _dst: Option<&[u8]>,
         parent_nonce: &mut Nonce,
         message: &Mac1,
-    ) -> Self::Ciphertext {
+    ) -> Result<Self::Ciphertext, GarbleError> {
         let seed: Bit16ByteMac = self.clone().into();
         let message: Bit16ByteMac = message.clone().into();
 
@@ -38,7 +43,7 @@ where
             .zip(message.iter())
             .for_each(|(pad, msg)| *pad ^= msg);
 
-        ciphertext
+        Ok(ciphertext)
     }
 
     fn decrypt(
@@ -46,7 +51,7 @@ where
         _dst: Option<&[u8]>,
         parent_nonce: &mut Nonce,
         ciphertext: &Self::Ciphertext,
-    ) -> Mac1 {
+    ) -> Result<Mac1, EvalError> {
         let seed: Bit16ByteMac = self.clone().into();
 
         let mut plaintext = AesCtr::hash(&seed, &parent_nonce.bytes());
@@ -56,7 +61,7 @@ where
             .zip(ciphertext.iter())
             .for_each(|(pad, ciphertext)| *pad ^= ciphertext);
 
-        Bit16ByteMac(plaintext).into()
+        Ok(Bit16ByteMac(plaintext).into())
     }
 }
 
@@ -68,11 +73,11 @@ impl DeriveOutputMacKey<AesCtr, bool, bool, Bit16ByteMac, Bit16ByteMac> for Bit1
         _dst: Option<&[u8; 16]>,
         nonce: &Nonce,
         phi: &Self::Phi,
-    ) -> Bit16ByteMacKey {
+    ) -> Result<Bit16ByteMacKey, GarbleError> {
         let mac = self.encode(&false);
         let k = AesCtr::hash(&mac, &nonce.bytes());
 
-        Self { phi: *phi, k }
+        Ok(Self { phi: *phi, k })
     }
 }
 
@@ -85,8 +90,11 @@ impl Circuit<bool, Bit16ByteMac, bool, Bit16ByteMac> for Table<AesCtr, Bit16Byte
         _rng: &mut StdRng,
         aux: Option<&Self::Aux>,
         input_mac_key: &Bit16ByteMacKey,
-    ) -> (Self, Bit16ByteMacKey) {
-        let phi = aux.unwrap();
+    ) -> Result<(Self, Bit16ByteMacKey), GarbleError> {
+        let phi = aux.ok_or(GarbleError::AuxError(
+            type_name::<Self::Aux>(),
+            type_name::<Self>(),
+        ))?;
 
         // The output_mac_key is derived s.t.
         // - output_mac_key.phi = phi, and
@@ -98,7 +106,7 @@ impl Circuit<bool, Bit16ByteMac, bool, Bit16ByteMac> for Table<AesCtr, Bit16Byte
                 bool,
                 Bit16ByteMac,
                 Bit16ByteMac,
-            >>::derive_output_mac_key(input_mac_key, None, parent_nonce, phi);
+            >>::derive_output_mac_key(input_mac_key, None, parent_nonce, phi)?;
 
         // We encrypt the encoding of output_mac_key.encode(true), using
         // input_mac_key.encode(true) as the key. This ciphertext is stored
@@ -111,15 +119,15 @@ impl Circuit<bool, Bit16ByteMac, bool, Bit16ByteMac> for Table<AesCtr, Bit16Byte
             None,
             parent_nonce,
             &msg,
-        );
+        )?;
 
-        (
+        Ok((
             Self {
                 gid: None,
                 ciphertext,
             },
             output_mac_key,
-        )
+        ))
     }
 
     fn evaluate(
@@ -127,7 +135,7 @@ impl Circuit<bool, Bit16ByteMac, bool, Bit16ByteMac> for Table<AesCtr, Bit16Byte
         parent_nonce: &mut Nonce,
         input: &bool,
         input_mac: &Bit16ByteMac,
-    ) -> (bool, Bit16ByteMac) {
+    ) -> Result<(bool, Bit16ByteMac), EvalError> {
         let output_mac = if !(*input) {
             // If the input is `false`, the `output_mac` will be
             //                  phi * 0 + k = k;
@@ -144,10 +152,10 @@ impl Circuit<bool, Bit16ByteMac, bool, Bit16ByteMac> for Table<AesCtr, Bit16Byte
                 None,
                 parent_nonce,
                 &self.ciphertext,
-            )
+            )?
         };
 
-        (*input, output_mac)
+        Ok((*input, output_mac))
     }
 }
 
@@ -174,7 +182,8 @@ fn test_aes_ctr_bytes_to_bytes_adaptor() {
             &mut rng,
             Some(&phi),
             &input_mac_key,
-        );
+        )
+        .unwrap();
         clear_set();
 
         let input = Bit16ByteMac::random_input(&mut rng);
@@ -185,6 +194,7 @@ fn test_aes_ctr_bytes_to_bytes_adaptor() {
 
         let evaluated_output_mac: Bit16ByteMac = garbling_table
             .evaluate(&mut Nonce::new(), &input, &input_mac)
+            .unwrap()
             .1;
         clear_set();
 

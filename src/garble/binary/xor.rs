@@ -12,6 +12,7 @@ use crate::{
         binary::{BinaryInput, BinaryInputMac, BinaryInputMacKey, BitMac, BitMacKey, Xor},
         bit::bytes::Bit16ByteMacKey,
     },
+    utils::error::{EvalError, GarbleError},
 };
 
 pub(crate) type InputMacKey = BinaryInputMacKey<Xor>;
@@ -26,6 +27,11 @@ type OutputMac = BitMac<Xor>;
 type OutputMacKey = BitMacKey<Xor>;
 
 impl InputMacKey {
+    /// Derives output MAC key for A XOR B, given the input MAC keys for A, B.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if A.phi != B.phi.
     pub(crate) fn output_mac_key(&self) -> OutputMacKey {
         let phi = self.left.phi;
         assert_eq!(phi, self.right.phi);
@@ -56,8 +62,8 @@ impl Circuit<Input, InputMac, bool, OutputMac> for Table {
         _rng: &mut StdRng,
         _aux: Option<&Self::Aux>,
         input_mac_key: &<BinaryInputMac<Xor> as Mac<BinaryInput<Xor>>>::Key,
-    ) -> (Self, <OutputMac as Mac<bool>>::Key) {
-        (Self, input_mac_key.output_mac_key())
+    ) -> Result<(Self, <OutputMac as Mac<bool>>::Key), GarbleError> {
+        Ok((Self, input_mac_key.output_mac_key()))
     }
 
     fn evaluate(
@@ -65,8 +71,8 @@ impl Circuit<Input, InputMac, bool, OutputMac> for Table {
         _parent_nonce: &mut Nonce,
         input: &BinaryInput<Xor>,
         input_mac: &BinaryInputMac<Xor>,
-    ) -> (bool, OutputMac) {
-        (input.xor(), input_mac.xor())
+    ) -> Result<(bool, OutputMac), EvalError> {
+        Ok((input.xor(), input_mac.xor()))
     }
 }
 
@@ -85,8 +91,13 @@ fn test_xor_circuit() {
     let output_mac_key = input_mac_key.output_mac_key();
     let input_mac = input_mac_key.encode(&input);
 
-    let circuit = Table::garble(&mut Nonce::new(), &mut rng, None, &input_mac_key).0;
-    let output_mac = circuit.evaluate(&mut Nonce::new(), &input, &input_mac).1;
+    let circuit = Table::garble(&mut Nonce::new(), &mut rng, None, &input_mac_key)
+        .unwrap()
+        .0;
+    let output_mac = circuit
+        .evaluate(&mut Nonce::new(), &input, &input_mac)
+        .unwrap()
+        .1;
 
     let output = input.xor();
     let expected_output_mac = output_mac_key.encode(&output);
