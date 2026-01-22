@@ -107,7 +107,7 @@ where
             .try_into()
             .map_err(|_| SerializationError::InvalidData);
 
-        macs.map(|macs| IteratedMac::from(macs))
+        macs.map(IteratedMac::from)
     }
 }
 

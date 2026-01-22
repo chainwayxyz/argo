@@ -451,8 +451,8 @@ fn test_malformed_curve_points() {
 
         malformed_a
             .into_iter()
-            .chain(malformed_b.into_iter())
-            .chain(malformed_c.into_iter())
+            .chain(malformed_b)
+            .chain(malformed_c)
             .chain(Some(malformed_x))
     };
 

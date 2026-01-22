@@ -25,8 +25,7 @@ fn amortised_garble(c: &mut Criterion) {
     garble_group.sample_size(10);
     garble_group.bench_function("amortised_garble", |b| {
         b.iter(|| {
-            let chunk_size =
-                (N as usize + rayon::current_num_threads() - 1) / rayon::current_num_threads(); // = 40
+            let chunk_size = (N as usize).div_ceil(rayon::current_num_threads());
 
             (0..N)
                 .collect::<Vec<_>>()

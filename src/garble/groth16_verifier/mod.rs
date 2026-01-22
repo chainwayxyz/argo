@@ -451,7 +451,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
                             let C = &c_ec_mac[idx];
                             let x_G = &x_G_mac[idx];
 
-                            let pairing = Bn254::multi_pairing(&[**C, **x_G], &[H1, H2]);
+                            let pairing = Bn254::multi_pairing([**C, **x_G], [H1, H2]);
 
                             let mac = (pairing.0 * **AB).into();
                             conditional_reveal_mac.push(mac);

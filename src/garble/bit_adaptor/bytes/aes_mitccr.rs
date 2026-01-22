@@ -187,7 +187,7 @@ impl Circuit<bool, Bit16ByteMac, bool, Bit16ByteMac>
             //                  phi * 0 + k = k;
             // but since output_mac_key.k = hash(input_mac_key.encode(false)),
             // we can directly derive `k` by hashing the `input_mac`.
-            let hash = AesMiTCCR::hash(&dst, &input_mac);
+            let hash = AesMiTCCR::hash(&dst, input_mac);
             hash.into()
         } else {
             // If the input is `true`, we have to decrypt the table entry

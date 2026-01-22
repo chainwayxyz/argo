@@ -163,6 +163,9 @@ where
             .map(|(phi, t)| phi.endo(*point) - t.mul(a))
             .collect();
         let s = Projective::<C>::normalize_batch(&s);
+        // This unwrap cannot fail because `output_mac_key` is a fixed
+        // array of `[EndoMacKey; KAPPA]`.
+        let s = s.try_into().unwrap();
 
         Ok((
             Self {
@@ -170,10 +173,8 @@ where
                 point: *point,
                 // This unwrap cannot fail because `output_mac_key` is a fixed
                 // array of `[EndoMacKey; KAPPA]`.
-                s: s.try_into().unwrap(),
-                // This unwrap cannot fail because `output_mac_key` is a fixed
-                // array of `[EndoMacKey; KAPPA]`.
-                t: t.try_into().unwrap(),
+                s,
+                t,
             },
             output_mac_key.clone(),
         ))

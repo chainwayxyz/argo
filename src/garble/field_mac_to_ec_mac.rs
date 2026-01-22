@@ -364,7 +364,7 @@ fn test_field_mac_to_ec_mac_g2() {
 
 #[cfg(test)]
 // Roundtrip serialisation and deserialisation of the table.
-fn test_serde_roundtrip<C, const KAPPA: usize>(name: &String, is_full: bool)
+fn test_serde_roundtrip<C, const KAPPA: usize>(name: &str, is_full: bool)
 where
     C: GLVConfig + Clone,
     C::BaseField: Field<BasePrimeField = Fq>
