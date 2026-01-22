@@ -28,9 +28,9 @@ type OutputMacKey = BitMacKey<Xor>;
 
 impl InputMacKey {
     /// Derives output MAC key for A XOR B, given the input MAC keys for A, B.
-    /// 
+    ///
     /// # Panics
-    /// 
+    ///
     /// Panics if A.phi != B.phi.
     pub(crate) fn output_mac_key(&self) -> OutputMacKey {
         let phi = self.left.phi;

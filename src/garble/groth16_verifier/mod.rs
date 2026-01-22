@@ -25,7 +25,7 @@ use crate::{
     },
     mac::{
         IdentityMac, IdentityMacKey, IteratedMac, Mac, MacKey, RandomFromPhi, digit,
-        endo::{EndoMacKey, EndoMultGroupMac, EndoScalar},
+        endo::{EndoMacKey, EndoMultGroupMac},
     },
     utils::error::{EvalError, GarbleError},
 };
@@ -327,14 +327,16 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         let (x_G, x_G_output_mac_key) = {
             let input_mac_key = &input_mac_key.x;
 
-            let mut c_phis = vec![EndoScalar::default(); KAPPA_B];
-            c_phis
-                .iter_mut()
-                .zip(pairing_output_mac_key.iter())
-                .for_each(|(phi, key)| *phi = key.phi.clone());
-            // This unwrap cannot fail as `c_phis`, `pairing_output_mac_key`
-            // are both of length `KAPPA_B`.
-            let c_phis = c_phis.try_into().unwrap_or_else(|_| panic!());
+            // This unwrap cannot fail as `pairing_output_mac_key` is of length
+            // `KAPPA_B`.
+            // FIXME can we deep copy the pairing_output_mac_key array?
+            // FIXME can we just borrow?
+            let c_phis = pairing_output_mac_key
+                .iter()
+                .map(|key| key.phi.clone())
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap_or_else(|_| panic!());
 
             scalar_mul::fixed::Table::garble(
                 parent_nonce,

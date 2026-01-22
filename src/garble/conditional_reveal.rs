@@ -39,6 +39,12 @@ pub struct Table<const KAPPA: usize> {
 }
 
 impl<const KAPPA: usize> Table<KAPPA> {
+    /// Derives the conditional reveal input_mac_key.
+    ///
+    /// # Panics
+    ///
+    /// Panics if verifier_key.c == Fq12::ZERO, since `c` must be in the
+    /// multiplicative subgroup of Fq12.
     pub(crate) fn groth16_input_mac_key(
         verifier_key: &groth16_verifier::VerifierKey,
         pairing_output_mac_key: &[EndoMultGroupMacKey; KAPPA],
@@ -103,10 +109,14 @@ impl<const KAPPA: usize> Table<KAPPA> {
 
             // c^{p^(2phi + 6)} = c^{-p^(2phi)}
             // This has the effect of multiplying the MAC'd value by c
-            // This unwrap cannot fail since Fq12::ZERO is not in the
-            // multiplicative subgroup.
-            // FIXME handle incorrectly constructed vk?
-            let c_term = phi.endo_frob(&verifier_key.c.inverse().unwrap());
+            // This panics if `c` = Fq12::ZERO, since `c` must be in the
+            // Fq12 multiplicative subgroup.
+            let c_term = phi.endo_frob(
+                &verifier_key
+                    .c
+                    .inverse()
+                    .expect("verifier_key.c must be in the Fq12 multiplicative subgroup."),
+            );
             let k = k * AB.k * c_term;
 
             key.push(EndoMultGroupMacKey { phi, k });

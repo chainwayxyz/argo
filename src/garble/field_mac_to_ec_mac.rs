@@ -62,7 +62,7 @@ where
     type Aux = (bool, OutputMacKey<Config, KAPPA>);
 
     /// # Panics
-    /// 
+    ///
     /// Panics if Config::COEFF_A is nonzero.
     fn garble(
         parent_nonce: &mut Nonce,

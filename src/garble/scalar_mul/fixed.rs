@@ -41,11 +41,14 @@ where
     C::ScalarField: Random,
     <C::ScalarField as Field>::BasePrimeField: FromLeBytesModOrder,
 {
+    /// Converts input bit MACs into a DigitMAC, where each bit is MAC'd under
+    /// the same `phi`.
     pub(crate) adaptors: Vec<bit_adaptor::Table<AesCtr, Bit16ByteMac, BitGroupMac<C::ScalarField>>>,
+    /// The fixed base `P`.
     pub(crate) point: Affine<C>,
-    // S_i = [\phi_i]P + [a • c_i]P
+    /// S_i = [\phi_i]P + [a • c_i]P
     pub(crate) s: [Affine<C>; KAPPA],
-    // T_i = [c_i]P
+    /// T_i = [c_i]P
     pub(crate) t: [Affine<C>; KAPPA],
 }
 
@@ -54,19 +57,34 @@ where
     C::ScalarField: Random,
     <C::ScalarField as Field>::BasePrimeField: FromLeBytesModOrder,
 {
+    /// Derives an `OutputMacKey: [EndoMacKey; KAPPA]` given an input_mac_key
+    /// and an array of `phi`s
     pub(crate) fn output_mac_key_from_phis(
         rng: &mut StdRng,
         input_mac_key: &GroupMacKey<C::ScalarField>,
         phis: &[EndoScalar<C>; KAPPA],
-    ) -> OutputMacKey<C, KAPPA> {
-        let point = Projective::<C>::generator();
-        let mut k_scalars = vec![C::ScalarField::ZERO; KAPPA];
-        k_scalars.iter_mut().for_each(|k| {
-            let c = C::ScalarField::rand(rng);
-            *k = input_mac_key.k * c
+    ) -> ([Affine<C>; KAPPA], OutputMacKey<C, KAPPA>) {
+        // Sample `KAPPA` random `t_scalars
+        let mut t_scalars = vec![C::ScalarField::ZERO; KAPPA];
+        t_scalars.iter_mut().for_each(|t| {
+            *t = C::ScalarField::rand(rng);
         });
-        let k = point.batch_mul(&k_scalars);
+        // t := [t_scalar]G
+        let t = Projective::<C>::generator().batch_mul(&t_scalars);
 
+        // Sample `KAPPA` random `k_scalars` of the form:
+        //   input_mac_key.k * t
+        let mut k_scalars = vec![C::ScalarField::ZERO; KAPPA];
+        k_scalars
+            .iter_mut()
+            .zip(t_scalars.iter())
+            .for_each(|(k, t)| *k = input_mac_key.k * t);
+
+        // k := [k_scalar]G
+        let k = Projective::<C>::generator().batch_mul(&k_scalars);
+
+        // Construct the output MAC key using the given `phi`s and the randomly
+        // sampled `k_scalars`.
         let mut keys: Vec<EndoMacKey<C>> = Vec::with_capacity(KAPPA);
         phis.iter()
             .zip(k_scalars)
@@ -79,9 +97,12 @@ where
                 })
             });
 
-        // This unwrap cannot fail since `phi`, `k_scalars`, `k` are all
-        // known to be length `KAPPA`.
-        keys.try_into().unwrap_or_else(|_| panic!())
+        // This unwrap cannot fail since these were constructed from arrays of
+        // length `KAPPA`.
+        (
+            t.try_into().unwrap_or_else(|_| panic!()),
+            keys.try_into().unwrap_or_else(|_| panic!()),
+        )
     }
 }
 
@@ -95,9 +116,6 @@ where
 {
     type Aux = (Affine<C>, [EndoScalar<C>; KAPPA]);
 
-    /// # Panics
-    /// 
-    /// Panics if reconstructed input_mac_key.k is C::ScalarField::ZERO.
     fn garble(
         parent_nonce: &mut Nonce,
         rng: &mut StdRng,
@@ -111,11 +129,12 @@ where
         let mut nonce = parent_nonce.fork();
 
         // Adaptor tables for the scalar
-        let phi = C::ScalarField::rand(rng);
-
         let mut adaptors = Vec::with_capacity(input_mac_key.len());
+        // Digit MAC key
         let mut adapted_mac_key = Vec::with_capacity(input_mac_key.len());
 
+        // Sample a random `phi` for the Digit MAC key
+        let phi = C::ScalarField::rand(rng);
         for bit_mac_key in input_mac_key.iter() {
             let (table, mac_key) = bit_adaptor::Table::<
                 AesCtr,
@@ -127,25 +146,21 @@ where
         }
 
         let input_mac_key: group::DigitMacKey<C::ScalarField> = adapted_mac_key.into();
+        // Reconstruct GroupMacKey from DigitMacKey
         let input_mac_key = input_mac_key
             .try_into_group_mac_key()
             .ok_or(GarbleError::DigitMacKeyReconstructionError)?;
 
         let a = input_mac_key.phi;
-        let b = input_mac_key.k;
-        // We assume that input_mac_key.k is nonzero.
-        let b_inv = b.inverse().expect("Reconstructed input_mac_key.k must be nonzero.");
 
-        let output_mac_key = Self::output_mac_key_from_phis(rng, &input_mac_key, phis);
+        let (t, output_mac_key) = Self::output_mac_key_from_phis(rng, &input_mac_key, phis);
 
-        let t: Vec<Projective<C>> = output_mac_key.iter().map(|key| key.k.mul(b_inv)).collect();
-        let t = Projective::<C>::normalize_batch(&t);
-
+        // output_mac_key.phi.endo(P) - [a]t
         let s: Vec<Projective<C>> = output_mac_key
             .iter()
             .map(|key| &key.phi)
             .zip(t.iter())
-            .map(|(phi, ci_p)| phi.endo(*point) - ci_p.mul(a))
+            .map(|(phi, t)| phi.endo(*point) - t.mul(a))
             .collect();
         let s = Projective::<C>::normalize_batch(&s);
 
@@ -174,6 +189,7 @@ where
 
         let mut adapted_input_mac = Vec::with_capacity(self.adaptors.len());
 
+        // Get Digit MAC by evaluating the adaptor tables.
         for ((adaptor, input), input_mac) in self
             .adaptors
             .iter()
@@ -184,9 +200,11 @@ where
             adapted_input_mac.push(mac);
         }
 
+        // Reconstruct GroupMAC from DigitMAC.
         let input_mac: group::DigitMac<C::ScalarField> = adapted_input_mac.into();
         let input_mac = input_mac.try_into_group_mac()?;
 
+        //   [input_mac] t + [input] s
         let output_mac: Vec<_> = self
             .t
             .iter()

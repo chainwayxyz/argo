@@ -55,6 +55,10 @@ where
     C: AffineRepr,
     C::BaseField: Field,
 {
+    /// # Panics
+    ///
+    /// Panics if `value` is the point at infinity.
+    /// FIXME is this okay?
     fn from(value: C) -> Self {
         let (x, y) = value.xy().unwrap();
         Self { x, y }

@@ -100,9 +100,9 @@ impl AesCtr {
     }
 
     /// The number of bytes of this field element as a multiple of AES blocks.
-    /// 
+    ///
     /// # Panics
-    /// 
+    ///
     /// Panics if the number of bytes is not a multiple of AES_BLOCK_SIZE.
     pub(crate) fn num_blocks<F: Field>() -> usize {
         let base_prime_field_num_bytes = F::BasePrimeField::MODULUS_BIT_SIZE.div_ceil(8) as usize;

@@ -33,7 +33,7 @@ impl FromBits<bool, Fq> for Fq {
 
 impl FromBits<bool, Fq2> for Fq2 {
     /// # Panics
-    /// 
+    ///
     /// Panics if `bits` is not of length Fq::MODULUS_BIT_SIZE * 2.
     fn from_bits<I: DoubleEndedIterator<Item = bool> + ExactSizeIterator>(
         mut bits: I,
@@ -62,7 +62,7 @@ impl FromBits<Fr, Fr> for Fr {
 
 impl FromBits<Fq, Fq2> for Fq2 {
     /// # Panics
-    /// 
+    ///
     /// Panics if `bits` is not of length Fq::MODULUS_BIT_SIZE * 2.
     fn from_bits<I: DoubleEndedIterator<Item = Fq> + ExactSizeIterator>(
         mut bits: I,
@@ -79,7 +79,7 @@ impl FromBits<Fq, Fq2> for Fq2 {
 
 impl FromBits<Fq2, Fq2> for Fq2 {
     /// # Panics
-    /// 
+    ///
     /// Panics if `bits` is not of length Fq::MODULUS_BIT_SIZE * 2.
     fn from_bits<I: DoubleEndedIterator<Item = Fq2> + ExactSizeIterator>(
         mut bits: I,
