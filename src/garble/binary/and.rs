@@ -74,10 +74,8 @@ impl Circuit<Input, InputMac, bool, OutputMac> for Table {
     ) -> Result<(Self, OutputMacKey), GarbleError> {
         let mut nonce = parent_nonce.fork();
 
-        let gid = *aux.ok_or(GarbleError::AuxError(
-            type_name::<Self::Aux>(),
-            type_name::<Self>(),
-        ))?;
+        let gid = *aux
+            .ok_or_else(|| GarbleError::AuxError(type_name::<Self::Aux>(), type_name::<Self>()))?;
 
         // Bit adaptor table mapping from a MAC under input_mac_key.right to a
         // MAC under a mac_key s.t.

@@ -1,4 +1,5 @@
 use ark_bn254::{Fq, Fq2, Fr, G2Affine, g1, g2};
+use ark_ec::{CurveConfig, short_weierstrass::SWCurveConfig};
 use ark_ff::{AdditiveGroup, Field};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::Zero;
@@ -7,7 +8,7 @@ use crate::{
     garble::{
         Circuit,
         binary::less_than,
-        bivariate::curve_membership,
+        bivariate::{self, Monomial, Poly},
         g2_subgroup_check,
         groth16_verifier::{GID, Input, InputMac, KAPPA_B},
     },
@@ -29,17 +30,17 @@ pub struct Table {
     // Checks that `A.x`, `A.y` are valid Fq elements
     a_range_check: [less_than::Table<Fq>; 2],
     // Checks that A is a valid G1 curve point, leaking `secret` if not
-    a_curve_check: curve_membership::Table<g1::Config>,
+    a_curve_check: bivariate::Table<<g1::Config as CurveConfig>::BaseField>,
     // Checks that `B.x`, `B.y` are valid Fq2 elements
     b_range_check: [less_than::Table<Fq>; 4],
     // Checks that B is a valid curve point, leaking `secret` if not
-    b_curve_check: curve_membership::Table<g2::Config>,
+    b_curve_check: bivariate::Table<<g2::Config as CurveConfig>::BaseField>,
     // Checks that B is in G2, leaking `secret` if not
     b_g2_check: g2_subgroup_check::Table,
     // Checks that `C.x`, `C.y` are valid Fq elements
     c_range_check: [less_than::Table<Fq>; 2],
     // Checks that C is a valid G1 curve point, leaking `secret` if not
-    c_curve_check: curve_membership::Table<g1::Config>,
+    c_curve_check: bivariate::Table<<g1::Config as CurveConfig>::BaseField>,
     // Global ID of this instance
     gid: GID,
 }
@@ -64,6 +65,17 @@ impl Table {
             b_ec_mac_key,
         } = aux;
 
+        //   (B + x^3 - y^2) s
+        // = sB + sx^3 -sy^2
+        fn curve_membership_poly<C: SWCurveConfig>(secret: C::BaseField) -> Poly<C::BaseField> {
+            let mut poly = Poly::default();
+            poly.insert(Monomial::constant(), secret * C::COEFF_B);
+            poly.insert(Monomial::new(3, 0), secret);
+            poly.insert(Monomial::new(0, 2), -secret);
+
+            poly
+        }
+
         let mut a_range_check = Vec::with_capacity(2);
         for input_mac_key in [&input_mac_key.A.x, &input_mac_key.A.y].iter() {
             let table = less_than::Table::<Fq>::garble(
@@ -81,10 +93,10 @@ impl Table {
 
         // Garbling table to check that `A` is a valid G1 curve point.
         // This table leaks `secret` if `A` is not a valid curve point.
-        let a_curve_check = curve_membership::Table::garble(
+        let a_curve_check = bivariate::Table::garble(
             parent_nonce,
             rng,
-            Some(secret),
+            Some(&curve_membership_poly::<g1::Config>(*secret)),
             // Input MAC key for the (x, y) coordinates of `A`
             &input_mac_key.A,
         )?
@@ -115,10 +127,12 @@ impl Table {
 
         // Garbling table to check that `B` is a valid curve point.
         // This table leaks `secret` if `B` is not a valid curve point.
-        let b_curve_check = curve_membership::Table::garble(
+        let b_curve_check = bivariate::Table::garble(
             parent_nonce,
             rng,
-            Some(&Fq2::from_base_prime_field(*secret)),
+            Some(&curve_membership_poly::<g2::Config>(
+                Fq2::from_base_prime_field(*secret),
+            )),
             // Input MAC key for the (x, y) coordinates of `B`
             &input_mac_key.B,
         )?
@@ -146,10 +160,10 @@ impl Table {
 
         // Garbling table to check that `C` is a valid G1 curve point.
         // This table leaks `secret` if `C` is not a valid curve point.
-        let c_curve_check = curve_membership::Table::garble(
+        let c_curve_check = bivariate::Table::garble(
             parent_nonce,
             rng,
-            Some(secret),
+            Some(&curve_membership_poly::<g1::Config>(*secret)),
             // Input MAC key for the (x, y) coordinates of `C`
             &input_mac_key.C,
         )?
@@ -190,6 +204,13 @@ impl Table {
         // The Groth16 input (A, B, C).
         let Input { A, B, C, x } = *input;
 
+        /// B + x^3 - y^2
+        fn curve_check_offset<C: SWCurveConfig>(
+            point: bivariate::Input<C::BaseField>,
+        ) -> C::BaseField {
+            C::COEFF_B + point.x.square() * point.x - point.y.square()
+        }
+
         // Checks that A.x, A.y are valid Fq elements, returning the `secret`
         // otherwise.
         {
@@ -216,7 +237,9 @@ impl Table {
             .0;
         // If `A` is not a valid curve point, return `secret` early
         if !a_curve_check.is_zero() {
-            return Ok(a_curve_check);
+            // This unwrap cannot fail because B + x^3 - y^2 != 0
+            let inv_curve_check_offset = curve_check_offset::<g1::Config>(A).inverse().unwrap();
+            return Ok(a_curve_check * inv_curve_check_offset);
         }
 
         // Checks that B.x, B.y are valid Fq elements, returning the `secret`
@@ -250,8 +273,13 @@ impl Table {
             .0;
         // If `B` is not a valid curve point, return `secret` early
         if !b_curve_check.is_zero() {
+            // This unwrap cannot fail because B + x^3 - y^2 != 0
+            let inv_curve_check_offset = curve_check_offset::<g2::Config>(B).inverse().unwrap();
+            let secret = b_curve_check * inv_curve_check_offset;
             // This unwrap cannot fail because `b_curve_check` is a nonzero Fq2
-            return Ok(b_curve_check.to_base_prime_field_elements().next().unwrap());
+            let secret = secret.to_base_prime_field_elements().next().unwrap();
+
+            return Ok(secret);
         }
 
         let b_g2_check = self
@@ -289,7 +317,10 @@ impl Table {
             .0;
         // If `C` is not a valid curve point, return `secret` early
         if !c_curve_check.is_zero() {
-            return Ok(c_curve_check);
+            // This unwrap cannot fail because B + x^3 - y^2 != 0
+            let inv_curve_check_offset = curve_check_offset::<g1::Config>(C).inverse().unwrap();
+
+            return Ok(c_curve_check * inv_curve_check_offset);
         }
 
         // Evaluate the range check for `x`.

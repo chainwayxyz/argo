@@ -72,11 +72,11 @@ impl<const KAPPA: usize> Table<KAPPA> {
             let phi = C.phi.clone();
             let C_k_scalar = C
                 .k_scalar
-                .ok_or(GarbleError::MissingKScalar("C"))?
+                .ok_or_else(|| GarbleError::MissingKScalar("C"))?
                 .into_bigint();
             let xG_k_scalar = x_G
                 .k_scalar
-                .ok_or(GarbleError::MissingKScalar("x_G"))?
+                .ok_or_else(|| GarbleError::MissingKScalar("x_G"))?
                 .into_bigint();
 
             // e(G, H1)^{C_k_scalar}

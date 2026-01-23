@@ -43,10 +43,8 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         aux: Option<&Self::Aux>,
         input_mac_key: &<InputMac as crate::mac::Mac<Input>>::Key,
     ) -> Result<(Self, <IdentityMac<Output> as crate::mac::Mac<Output>>::Key), GarbleError> {
-        let secret = *aux.ok_or(GarbleError::AuxError(
-            type_name::<Self::Aux>(),
-            type_name::<Self>(),
-        ))?;
+        let secret = *aux
+            .ok_or_else(|| GarbleError::AuxError(type_name::<Self::Aux>(), type_name::<Self>()))?;
         let enc_s = secret
             + conditional_reveal::Table::<KAPPA_B>::hash_packed_phis(
                 input_mac_key.iter().map(|key| key.phi.clone()),

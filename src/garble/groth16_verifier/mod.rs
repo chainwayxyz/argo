@@ -261,10 +261,8 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         input_mac_key: &InputMacKey,
     ) -> Result<(Self, <IdentityMac<Output> as Mac<Output>>::Key), GarbleError> {
         // The secret that will be conditionally revealed, and the Groth16 verifier key
-        let (secret, gid, verifier_key) = aux.ok_or(GarbleError::AuxError(
-            type_name::<Self::Aux>(),
-            type_name::<Self>(),
-        ))?;
+        let (secret, gid, verifier_key) = aux
+            .ok_or_else(|| GarbleError::AuxError(type_name::<Self::Aux>(), type_name::<Self>()))?;
 
         // Sample random MAC keys and auxiliary values for the pairing table:
         // - a_ec_mac_key: used as the output key for field_to_ec_mac of `A`

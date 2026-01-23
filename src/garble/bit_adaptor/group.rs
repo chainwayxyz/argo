@@ -65,10 +65,8 @@ where
     ) -> Result<(Self, GroupMacKey<G>), GarbleError> {
         let mut nonce = parent_nonce.fork();
         // The chosen `phi` for the output_mac_key.
-        let phi = aux.ok_or(GarbleError::AuxError(
-            type_name::<Self::Aux>(),
-            type_name::<Self>(),
-        ))?;
+        let phi = aux
+            .ok_or_else(|| GarbleError::AuxError(type_name::<Self::Aux>(), type_name::<Self>()))?;
 
         // The output_mac_key is derived s.t.
         // - output_mac_key.phi = phi, and

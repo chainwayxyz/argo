@@ -170,14 +170,14 @@ impl<G: GLVConfig> EndoScalar<G> {
     /// curve:
     ///                        f : E/F -> F, f(X, Y)
     /// in coefficient form in the following monomial order
-    ///                        [1, X, Y, X Y, X^2, Y^2]
+    ///                        [1, X, Y, X^2, XY, Y^2]
     /// and composes an endomorphism with it
     pub(crate) fn endo_biquadratic_poly(&self, poly: Poly<G::BaseField>) -> Poly<G::BaseField> {
         match self {
             Self::NegInf(_) => {
                 let mut coeffs = [G::BaseField::ZERO; 6];
                 coeffs[0] = poly.leading_coeff();
-                Poly::new(coeffs)
+                Poly::biquadratic(coeffs)
             }
             _ => {
                 let (a, b) = {
@@ -191,10 +191,10 @@ impl<G: GLVConfig> EndoScalar<G> {
                 let mut coeffs = [G::BaseField::ONE, a, b, a.square(), a * b, b.square()];
                 coeffs
                     .iter_mut()
-                    .zip(poly.0.iter())
-                    .for_each(|(coeff, poly)| *coeff *= poly);
+                    .zip(poly.iter())
+                    .for_each(|(coeff, poly)| *coeff *= poly.1);
 
-                Poly::new(coeffs)
+                Poly::biquadratic(coeffs)
             }
         }
     }
@@ -297,9 +297,7 @@ where
     }
 }
 
-#[derive(
-    Clone, Copy, PartialEq, CanonicalSerialize, CanonicalDeserialize, From, Deref,
-)]
+#[derive(Clone, Copy, PartialEq, CanonicalSerialize, CanonicalDeserialize, From, Deref)]
 pub struct EndoMac<G: GLVConfig>(Affine<G>);
 
 impl<G: GLVConfig> Neg for EndoMac<G> {

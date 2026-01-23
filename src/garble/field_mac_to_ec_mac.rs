@@ -20,7 +20,7 @@ use ark_std::rand::rngs::StdRng;
 use crate::{
     garble::{
         Circuit, Nonce,
-        bivariate::{Input, InputMac, InputMacKey, Poly, biquadratic},
+        bivariate::{self, Input, InputMac, InputMacKey, Poly},
     },
     mac::{
         Random, RandomFromPhi,
@@ -45,9 +45,9 @@ where
     <C::BaseField as Field>::BasePrimeField: FromLeBytesModOrder,
 {
     is_full: bool,
-    x: Vec<biquadratic::Table<C::BaseField>>,
-    y: Option<Vec<biquadratic::Table<C::BaseField>>>,
-    z: Vec<biquadratic::Table<C::BaseField>>,
+    x: Vec<bivariate::Table<C::BaseField>>,
+    y: Option<Vec<bivariate::Table<C::BaseField>>>,
+    z: Vec<bivariate::Table<C::BaseField>>,
 }
 
 impl<Config, F, const KAPPA: usize>
@@ -73,22 +73,19 @@ where
         assert_eq!(Config::COEFF_A, F::ZERO);
 
         let mut nonce = parent_nonce.fork();
-        let (is_full, output_mac_key) = aux.ok_or(GarbleError::AuxError(
-            type_name::<Self::Aux>(),
-            type_name::<Self>(),
-        ))?;
+        let (is_full, output_mac_key) = aux
+            .ok_or_else(|| GarbleError::AuxError(type_name::<Self::Aux>(), type_name::<Self>()))?;
 
-        fn x_aux<C, F>(mac_key: &EndoMacKey<C>, a2: F) -> Result<([F; 6], [bool; 6]), GarbleError>
+        fn x_aux<C, F>(mac_key: &EndoMacKey<C>, a2: F) -> Result<Poly<F>, GarbleError>
         where
             C: GLVConfig<BaseField = F>,
             F: Field,
         {
             let B = C::COEFF_B;
-            let cs_flags = [true, true, true, true, false, false];
             let (x, y) = mac_key
                 .k
                 .xy()
-                .ok_or(GarbleError::InvalidEndoMacKeyK(format!("{:?}", mac_key.k)))?;
+                .ok_or_else(|| GarbleError::InvalidEndoMacKeyK(format!("{:?}", mac_key.k)))?;
             // f(X, Y) = phi * (X, Y) + K = (a X, b Y) + K
             let mut cs = {
                 //  (6, 1)                 # c0
@@ -104,17 +101,17 @@ where
                 //  (0, yP_^2)             # c5 = 0
                 let c5 = F::ZERO;
 
-                Poly::new([c0, c1, c2, c3, c4, c5])
+                Poly::biquadratic([c0, c1, c2, c3, c4, c5])
             };
 
             // Scale by random a2 = a^2
             cs.scale(a2);
             let cs = mac_key.phi.endo_biquadratic_poly(cs);
 
-            Ok((cs.0, cs_flags))
+            Ok(cs)
         }
 
-        fn y_aux<C, F>(mac_key: &EndoMacKey<C>, a3: F) -> Result<([F; 6], [bool; 6]), GarbleError>
+        fn y_aux<C, F>(mac_key: &EndoMacKey<C>, a3: F) -> Result<Poly<F>, GarbleError>
         where
             C: GLVConfig<BaseField = F>,
             F: Field,
@@ -123,9 +120,8 @@ where
             let (x, y) = mac_key
                 .k
                 .xy()
-                .ok_or(GarbleError::InvalidEndoMacKeyK(format!("{:?}", mac_key.k)))?;
+                .ok_or_else(|| GarbleError::InvalidEndoMacKeyK(format!("{:?}", mac_key.k)))?;
 
-            let cs_flags = [true, false, true, true, true, true];
             let mut cs = {
                 //  (9*yQ_, 1)                  # c0
                 let c0 = F::from(3) * B * y;
@@ -140,17 +136,17 @@ where
                 //  (yQ_, yP_^2),               # c5
                 let c5 = y;
 
-                Poly::new([c0, c1, c2, c3, c4, c5])
+                Poly::biquadratic([c0, c1, c2, c3, c4, c5])
             };
             // scale by random a3 = a^3
             cs.scale(a3);
 
             let cs = mac_key.phi.endo_biquadratic_poly(cs);
 
-            Ok((cs.0, cs_flags))
+            Ok(cs)
         }
 
-        fn z_aux<C, F>(mac_key: &EndoMacKey<C>, a: F) -> Result<([F; 6], [bool; 6]), GarbleError>
+        fn z_aux<C, F>(mac_key: &EndoMacKey<C>, a: F) -> Result<Poly<F>, GarbleError>
         where
             C: GLVConfig<BaseField = F>,
             F: Field,
@@ -158,8 +154,7 @@ where
             let x = mac_key
                 .k
                 .x()
-                .ok_or(GarbleError::InvalidEndoMacKeyK(format!("{:?}", mac_key.k)))?;
-            let cs_flags = [true, true, false, false, false, false];
+                .ok_or_else(|| GarbleError::InvalidEndoMacKeyK(format!("{:?}", mac_key.k)))?;
 
             let mut cs = {
                 //  (-xQ_,      1)]       # c0
@@ -171,13 +166,13 @@ where
                 let c4 = F::ZERO;
                 let c5 = F::ZERO;
 
-                Poly::new([c0, c1, c2, c3, c4, c5])
+                Poly::biquadratic([c0, c1, c2, c3, c4, c5])
             };
             // scale by random `a`
             cs.scale(a);
             let cs = mac_key.phi.endo_biquadratic_poly(cs);
 
-            Ok((cs.0, cs_flags))
+            Ok(cs)
         }
 
         let mut x = Vec::with_capacity(output_mac_key.len());
@@ -190,21 +185,19 @@ where
 
             // Scale z coordinate by `a`
             let z_table =
-                biquadratic::Table::garble(&mut nonce, rng, Some(&z_aux(key, a)?), input_mac_key)?
-                    .0;
+                bivariate::Table::garble(&mut nonce, rng, Some(&z_aux(key, a)?), input_mac_key)?.0;
             z.push(z_table);
 
             // Scale x coordinate by a^2
             let a2 = a.square();
             let x_table =
-                biquadratic::Table::garble(&mut nonce, rng, Some(&x_aux(key, a2)?), input_mac_key)?
-                    .0;
+                bivariate::Table::garble(&mut nonce, rng, Some(&x_aux(key, a2)?), input_mac_key)?.0;
             x.push(x_table);
 
             if *is_full {
                 // Scale y coordinate by a^3
                 let a3 = a2 * a;
-                let y_table = biquadratic::Table::garble(
+                let y_table = bivariate::Table::garble(
                     &mut nonce,
                     rng,
                     Some(&y_aux(key, a3)?),
@@ -392,9 +385,7 @@ where
     let input_point = Affine::<C>::rand(&mut rng);
     let input = input_point.into();
 
-    println!("before input_mac_key");
     let input_mac_key = InputMacKey::random_key(&mut rng);
-    println!("before output_mac_key");
     let output_mac_key = OutputMacKey::<_, KAPPA>::random_key(&mut rng);
 
     let original_table = Table::<C, KAPPA>::garble(

@@ -91,10 +91,8 @@ impl Circuit<bool, Bit16ByteMac, bool, Bit16ByteMac> for Table<AesCtr, Bit16Byte
         aux: Option<&Self::Aux>,
         input_mac_key: &Bit16ByteMacKey,
     ) -> Result<(Self, Bit16ByteMacKey), GarbleError> {
-        let phi = aux.ok_or(GarbleError::AuxError(
-            type_name::<Self::Aux>(),
-            type_name::<Self>(),
-        ))?;
+        let phi = aux
+            .ok_or_else(|| GarbleError::AuxError(type_name::<Self::Aux>(), type_name::<Self>()))?;
 
         // The output_mac_key is derived s.t.
         // - output_mac_key.phi = phi, and

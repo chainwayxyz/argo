@@ -35,7 +35,7 @@ where
         parent_nonce: &mut Nonce,
         message: &Mac1,
     ) -> Result<Self::Ciphertext, GarbleError> {
-        let dst = dst.ok_or(GarbleError::MissingDST)?;
+        let dst = dst.ok_or_else(|| GarbleError::MissingDST)?;
 
         let input_mac: Bit16ByteMac = self.clone().into();
         let output_mac: Bit16ByteMac = message.clone().into();
@@ -95,7 +95,7 @@ impl DeriveOutputMacKey<AesMiTCCR, bool, bool, Bit16ByteMac, Bit16ByteMac> for B
         _nonce: &Nonce,
         phi: &Self::Phi,
     ) -> Result<Bit16ByteMacKey, GarbleError> {
-        let dst = dst.ok_or(GarbleError::DeriveOutputMacKeyError(type_name::<Self>()))?;
+        let dst = dst.ok_or_else(|| GarbleError::DeriveOutputMacKeyError(type_name::<Self>()))?;
         let mac = self.encode(&false);
         let k: [u8; 16] = AesMiTCCR::hash(dst, &mac);
 
@@ -132,10 +132,8 @@ impl Circuit<bool, Bit16ByteMac, bool, Bit16ByteMac>
         aux: Option<&Self::Aux>,
         input_mac_key: &Bit16ByteMacKey,
     ) -> Result<(Self, Bit16ByteMacKey), GarbleError> {
-        let Aux { gid, phi } = aux.ok_or(GarbleError::AuxError(
-            type_name::<Self::Aux>(),
-            type_name::<Self>(),
-        ))?;
+        let Aux { gid, phi } = aux
+            .ok_or_else(|| GarbleError::AuxError(type_name::<Self::Aux>(), type_name::<Self>()))?;
 
         let dst = Self::derive_dst(gid, parent_nonce);
 

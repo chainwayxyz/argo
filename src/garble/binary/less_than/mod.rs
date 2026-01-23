@@ -73,10 +73,8 @@ where
         input_mac_key: &DigitMacKey<F>,
     ) -> Result<(Self, IdentityMacKey), GarbleError> {
         let mut nonce = parent_nonce.fork();
-        let (secret, gid) = aux.ok_or(GarbleError::AuxError(
-            type_name::<Self::Aux>(),
-            type_name::<Self>(),
-        ))?;
+        let (secret, gid) = aux
+            .ok_or_else(|| GarbleError::AuxError(type_name::<Self::Aux>(), type_name::<Self>()))?;
 
         let mut phi = [0; 16];
         rng.fill_bytes(&mut phi);
