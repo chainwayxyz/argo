@@ -283,8 +283,8 @@ fn test_conditional_reveal_invalid() {
 #[test]
 fn test_preprocessed_pow_two() {
     use crate::garble::groth16_verifier::{VerifierKey, reset_preprocessed_vk};
-    use ark_bn254::{Bn254, Fr, G1Projective, G2Projective};
-    use ark_ec::{PrimeGroup, pairing::Pairing};
+    use ark_bn254::{Bn254, Fr, G1Affine, G2Affine};
+    use ark_ec::{AffineRepr, pairing::Pairing};
     use ark_ff::UniformRand;
     use ark_std::rand::{SeedableRng, rngs::StdRng};
 
@@ -293,10 +293,10 @@ fn test_preprocessed_pow_two() {
     let mut rng = StdRng::seed_from_u64(SEED);
 
     let verifier_key = VerifierKey {
-        G1: G1Projective::rand(&mut rng),
-        H1: G2Projective::rand(&mut rng),
-        H2: G2Projective::rand(&mut rng),
-        c: Bn254::pairing(G1Projective::rand(&mut rng), G2Projective::generator()).0,
+        G1: G1Affine::rand(&mut rng),
+        H1: G2Affine::rand(&mut rng),
+        H2: G2Affine::rand(&mut rng),
+        c: Bn254::pairing(G1Affine::rand(&mut rng), G2Affine::generator()).0,
     };
 
     let GarblePreprocessedVk {
@@ -306,7 +306,7 @@ fn test_preprocessed_pow_two() {
     } = verifier_key.garble_preprocess();
 
     let scalar = Fr::rand(&mut rng);
-    let point = G1Projective::generator() * scalar;
+    let point = G1Affine::generator() * scalar;
 
     let h1_pairing = Fq12::pow_with_table(&h1_target_pow_2, scalar.into_bigint()).unwrap();
     assert_eq!(h1_pairing, Bn254::pairing(point, verifier_key.H1).0);

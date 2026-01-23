@@ -11,8 +11,8 @@ pub(crate) mod input_validity;
 use core::panic;
 use std::{any::type_name, marker::PhantomData};
 
-use ark_bn254::{Bn254, Fq, Fq2, Fq12, Fr, G1Affine, G1Projective, G2Affine, G2Projective, g1, g2};
-use ark_ec::{AffineRepr, pairing::Pairing};
+use ark_bn254::{Bn254, Fq, Fq2, Fq12, Fr, G1Affine, G2Affine, g1, g2};
+use ark_ec::{AffineRepr, CurveGroup, pairing::Pairing};
 use ark_ff::{AdditiveGroup, Field, PrimeField};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::{SeedableRng, rngs::StdRng};
@@ -57,9 +57,9 @@ pub type GID = [u8; 16];
 /// Groth16 verifier key
 #[derive(Debug, Clone, Copy, CanonicalSerialize, CanonicalDeserialize)]
 pub struct VerifierKey {
-    pub G1: G1Projective,
-    pub H1: G2Projective,
-    pub H2: G2Projective,
+    pub G1: G1Affine,
+    pub H1: G2Affine,
+    pub H2: G2Affine,
     pub c: Fq12,
 }
 
@@ -79,11 +79,11 @@ impl VerifierKey {
     fn pairing(&self, input: &Input) -> Fq12 {
         Bn254::multi_pairing(
             vec![
-                input.A.into_group(),
-                input.C.into_group(),
-                self.G1 * input.x,
+                input.A.into(),
+                input.C.into(),
+                (self.G1 * input.x).into_affine(),
             ],
-            vec![input.B.into_group(), self.H1, self.H2],
+            vec![input.B.into(), self.H1, self.H2],
         )
         .0 * self.c
     }
@@ -130,9 +130,9 @@ impl VerifierKey {
 /// Groth16 proof.
 #[derive(Debug, Clone, Copy)]
 pub struct Input {
-    pub A: G1Affine,
-    pub B: G2Affine,
-    pub C: G1Affine,
+    pub A: bivariate::Input<Fq>,
+    pub B: bivariate::Input<Fq2>,
+    pub C: bivariate::Input<Fq>,
     pub x: Fr,
 }
 
@@ -159,9 +159,9 @@ type Output = conditional_reveal::Output;
 impl MacKey<Input, InputMac> for InputMacKey {
     fn encode(&self, value: &Input) -> InputMac {
         InputMac {
-            A: self.A.encode(&value.A.into()),
-            B: self.B.encode(&value.B.into()),
-            C: self.C.encode(&value.C.into()),
+            A: self.A.encode(&value.A),
+            B: self.B.encode(&value.B),
+            C: self.C.encode(&value.C),
             x: self.x.encode(&value.x),
         }
     }
@@ -192,9 +192,9 @@ impl Mac<Input> for InputMac {
         use ark_ff::UniformRand;
 
         Input {
-            A: G1Affine::rand(rng),
-            B: G2Affine::rand(rng),
-            C: G1Affine::rand(rng),
+            A: G1Affine::rand(rng).into(),
+            B: G2Affine::rand(rng).into(),
+            C: G1Affine::rand(rng).into(),
             x: Fr::rand(rng),
         }
     }
@@ -441,7 +441,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
                     // Evaluate the pairing of (A, B)
                     let AB_mac = self
                         .pairing
-                        .evaluate(&(A, B), &(a_ec_mac.clone(), b_ec_mac.clone()))
+                        .evaluate(&(A.into(), B.into()), &(a_ec_mac.clone(), b_ec_mac.clone()))
                         .1;
 
                     let conditional_reveal_mac: Box<[EndoMultGroupMac; KAPPA_B]> = {
@@ -477,6 +477,33 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
     }
 }
 
+#[cfg(test)]
+fn test_groth16(mut rng: &mut StdRng, input: &Input, vk: &VerifierKey, secret: Fq) -> Fq {
+    let gid = GID::random(&mut rng);
+
+    let input_mac_key = InputMacKey::random_key(&mut rng);
+    let table = Table::garble(
+        &mut Nonce::new(),
+        &mut rng,
+        Some(&(secret, gid, vk.clone())),
+        &input_mac_key,
+    )
+    .unwrap()
+    .0;
+    aes_ctr_clear_set();
+    aes_mitccr_clear_set();
+
+    let input_mac = input_mac_key.encode(&input);
+    let output = table
+        .evaluate(&mut Nonce::new(), &input, &input_mac)
+        .unwrap()
+        .0;
+    aes_ctr_clear_set();
+    aes_mitccr_clear_set();
+
+    output
+}
+
 #[test]
 /// Evaluating the circuit on a valid SNARK and its MAC should return Fq::ZERO,
 /// i.e. it should not reveal the `secret`.
@@ -488,44 +515,25 @@ fn test_valid_groth16() {
 
     let mut rng = StdRng::seed_from_u64(SEED);
 
+    let secret = Fq::rand(&mut rng);
+
     let input = InputMac::random_input(&mut rng);
-    let G1 = G1Projective::rand(&mut rng);
-    let H1 = G2Projective::rand(&mut rng);
-    let H2 = G2Projective::rand(&mut rng);
+    let G1 = G1Affine::rand(&mut rng);
+    let H1 = G2Affine::rand(&mut rng);
+    let H2 = G2Affine::rand(&mut rng);
 
     // Construct `c` for the verifier key s.t. our chosen inputs are valid,
     // i.e. e(A,B) e(C, H_1) = c^{-1}
     let c = Bn254::multi_pairing(
-        vec![input.A.into_group(), input.C.into_group(), G1 * input.x],
-        vec![input.B.into_group(), H1, H2],
+        vec![input.A.into(), input.C.into(), (G1 * input.x).into_affine()],
+        vec![input.B.into(), H1, H2],
     )
     .0
     .inverse()
     .unwrap();
 
-    let secret = Fq::rand(&mut rng);
-    let gid = GID::random(&mut rng);
     let verifier_key = VerifierKey { G1, H1, H2, c };
-
-    let input_mac_key = InputMacKey::random_key(&mut rng);
-    let table = Table::garble(
-        &mut Nonce::new(),
-        &mut rng,
-        Some(&(secret, gid, verifier_key)),
-        &input_mac_key,
-    )
-    .unwrap()
-    .0;
-    aes_ctr_clear_set();
-    aes_mitccr_clear_set();
-
-    let input_mac = input_mac_key.encode(&input);
-    let output = table
-        .evaluate(&mut Nonce::new(), &input, &input_mac)
-        .unwrap()
-        .0;
-    aes_ctr_clear_set();
-    aes_mitccr_clear_set();
+    let output = test_groth16(&mut rng, &input, &verifier_key, secret);
 
     // Assert that the circuit returns Fq::ZERO when evaluated on a valid input
     assert_eq!(output, Fq::ZERO);
@@ -535,44 +543,20 @@ fn test_valid_groth16() {
 /// Evaluating the circuit on an invalid SNARK and its MAC should reveal the
 /// `secret`.
 fn test_invalid_groth16() {
-    use ark_ec::PrimeGroup;
-
     const SEED: u64 = 0;
-
     let mut rng = StdRng::seed_from_u64(SEED);
 
-    let input = InputMac::random_input(&mut rng);
-    let gid = GID::random(&mut rng);
-
     let secret = Fq::rand(&mut rng);
+
+    let input = InputMac::random_input(&mut rng);
     let verifier_key = VerifierKey {
-        G1: G1Projective::rand(&mut rng),
-        H1: G2Projective::rand(&mut rng),
-        H2: G2Projective::rand(&mut rng),
-        c: Bn254::pairing(G1Projective::rand(&mut rng), G2Projective::generator()).0,
+        G1: G1Affine::rand(&mut rng),
+        H1: G2Affine::rand(&mut rng),
+        H2: G2Affine::rand(&mut rng),
+        c: Bn254::pairing(G1Affine::rand(&mut rng), G2Affine::generator()).0,
     };
 
-    let input_mac_key = InputMacKey::random_key(&mut rng);
-
-    let table = Table::garble(
-        &mut Nonce::new(),
-        &mut rng,
-        Some(&(secret, gid, verifier_key)),
-        &input_mac_key,
-    )
-    .unwrap()
-    .0;
-    aes_ctr_clear_set();
-    aes_mitccr_clear_set();
-
-    let input_mac = input_mac_key.encode(&input);
-
-    let output = table
-        .evaluate(&mut Nonce::new(), &input, &input_mac)
-        .unwrap()
-        .0;
-    aes_ctr_clear_set();
-    aes_mitccr_clear_set();
+    let output = test_groth16(&mut rng, &input, &verifier_key, secret);
 
     assert_eq!(output, secret);
 }
@@ -600,9 +584,9 @@ fn test_groth16_serde_roundtrip() {
     let gid = GID::random(&mut rng);
 
     let verifier_key = VerifierKey {
-        G1: G1Projective::rand(&mut rng),
-        H1: G2Projective::rand(&mut rng),
-        H2: G2Projective::rand(&mut rng),
+        G1: G1Affine::rand(&mut rng),
+        H1: G2Affine::rand(&mut rng),
+        H2: G2Affine::rand(&mut rng),
         c: Bn254::pairing(G1Projective::rand(&mut rng), G2Projective::generator()).0,
     };
 

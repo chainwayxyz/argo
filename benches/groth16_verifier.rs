@@ -5,8 +5,8 @@ use argo::{
     },
     mac::{MacKey, Random},
 };
-use ark_bn254::{Bn254, Fq, Fr, G1Affine, G1Projective, G2Affine, G2Projective};
-use ark_ec::{PrimeGroup, pairing::Pairing};
+use ark_bn254::{Bn254, Fq, Fr, G1Affine, G2Affine};
+use ark_ec::{AffineRepr, pairing::Pairing};
 use ark_ff::UniformRand;
 use ark_std::rand::{SeedableRng, rngs::StdRng};
 use criterion::{Criterion, criterion_group, criterion_main};
@@ -19,17 +19,17 @@ fn invalid_snark(c: &mut Criterion) {
     let gid = GID::random(&mut rng);
 
     let input = Input {
-        A: G1Affine::rand(&mut rng),
-        B: G2Affine::rand(&mut rng),
-        C: G1Affine::rand(&mut rng),
+        A: G1Affine::rand(&mut rng).into(),
+        B: G2Affine::rand(&mut rng).into(),
+        C: G1Affine::rand(&mut rng).into(),
         x: Fr::rand(&mut rng),
     };
 
     let verifier_key = VerifierKey {
-        G1: G1Projective::rand(&mut rng),
-        H1: G2Projective::rand(&mut rng),
-        H2: G2Projective::rand(&mut rng),
-        c: Bn254::pairing(G1Projective::rand(&mut rng), G2Projective::generator()).0,
+        G1: G1Affine::rand(&mut rng),
+        H1: G2Affine::rand(&mut rng),
+        H2: G2Affine::rand(&mut rng),
+        c: Bn254::pairing(G1Affine::rand(&mut rng), G2Affine::generator()).0,
     };
 
     let input_mac_key = InputMacKey::random_key(&mut rng);

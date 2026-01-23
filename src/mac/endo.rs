@@ -298,7 +298,7 @@ where
 }
 
 #[derive(
-    Clone, Copy, PartialEq, CanonicalSerialize, CanonicalDeserialize, Default, From, Deref,
+    Clone, Copy, PartialEq, CanonicalSerialize, CanonicalDeserialize, From, Deref,
 )]
 pub struct EndoMac<G: GLVConfig>(Affine<G>);
 
@@ -327,7 +327,7 @@ where
     }
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 pub struct EndoMacKey<G: GLVConfig> {
     pub(crate) phi: EndoScalar<G>,
     pub(crate) k_scalar: Option<G::ScalarField>,

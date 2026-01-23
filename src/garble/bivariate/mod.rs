@@ -58,7 +58,6 @@ where
     /// # Panics
     ///
     /// Panics if `value` is the point at infinity.
-    /// FIXME is this okay?
     fn from(value: C) -> Self {
         let (x, y) = value.xy().unwrap();
         Self { x, y }
@@ -71,7 +70,7 @@ where
     C::BaseField: Field,
 {
     fn from(val: Input<C::BaseField>) -> Self {
-        Affine::new(val.x, val.y)
+        Affine::new_unchecked(val.x, val.y)
     }
 }
 

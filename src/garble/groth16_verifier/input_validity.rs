@@ -254,7 +254,10 @@ impl Table {
             return Ok(b_curve_check.to_base_prime_field_elements().next().unwrap());
         }
 
-        let b_g2_check = self.b_g2_check.evaluate(parent_nonce, &B, b_ec_mac)?.0;
+        let b_g2_check = self
+            .b_g2_check
+            .evaluate(parent_nonce, &B.into(), b_ec_mac)?
+            .0;
         // If B is not in the G2 subgroup, return `secret early`
         if !b_g2_check.is_zero() {
             return Ok(b_g2_check);
@@ -360,7 +363,7 @@ fn test_malformed_curve_points() {
         .iter()
         .map(|A| {
             let mut input = input;
-            input.A = *A;
+            input.A = (*A).into();
             input
         })
         .collect();
@@ -422,7 +425,7 @@ fn test_malformed_curve_points() {
         .iter()
         .map(|B| {
             let mut input = input;
-            input.B = *B;
+            input.B = (*B).into();
             input
         })
         .collect();
@@ -438,7 +441,7 @@ fn test_malformed_curve_points() {
         .iter()
         .map(|C| {
             let mut input = input;
-            input.C = *C;
+            input.C = (*C).into();
             input
         })
         .collect();
@@ -461,7 +464,7 @@ fn test_malformed_curve_points() {
         aes_mitccr_clear_set();
 
         let input_mac = input_mac_key.encode(&input);
-        let b_ec_mac = b_ec_mac_key.encode(&input.B);
+        let b_ec_mac = b_ec_mac_key.encode(&input.B.into());
         table
             .evaluate(&mut Nonce::new(), &input, &input_mac, &b_ec_mac)
             .unwrap()
