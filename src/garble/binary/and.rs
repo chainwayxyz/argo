@@ -69,12 +69,12 @@ impl Circuit<Input, InputMac, bool, OutputMac> for Table {
     fn garble(
         parent_nonce: &mut Nonce,
         rng: &mut StdRng,
-        aux: Option<&Self::Aux>,
+        aux: Option<Self::Aux>,
         input_mac_key: &InputMacKey,
     ) -> Result<(Self, OutputMacKey), GarbleError> {
         let mut nonce = parent_nonce.fork();
 
-        let gid = *aux
+        let gid = aux
             .ok_or_else(|| GarbleError::AuxError(type_name::<Self::Aux>(), type_name::<Self>()))?;
 
         // Bit adaptor table mapping from a MAC under input_mac_key.right to a
@@ -92,7 +92,7 @@ impl Circuit<Input, InputMac, bool, OutputMac> for Table {
                 phi: input_mac_key.left.k,
             };
 
-            bit_adaptor::Table::garble(&mut nonce, rng, Some(&aux), &input_mac_key.right.key)?
+            bit_adaptor::Table::garble(&mut nonce, rng, Some(aux), &input_mac_key.right.key)?
         };
 
         output_mac_key.phi = input_mac_key.left.phi;
@@ -159,7 +159,7 @@ fn test_and_circuit() {
         let input_mac = input_mac_key.encode(&input);
 
         let (circuit, output_mac_key) =
-            Table::garble(&mut Nonce::new(), &mut rng, Some(&gid), &input_mac_key).unwrap();
+            Table::garble(&mut Nonce::new(), &mut rng, Some(gid), &input_mac_key).unwrap();
         clear_set();
 
         let output_mac = circuit

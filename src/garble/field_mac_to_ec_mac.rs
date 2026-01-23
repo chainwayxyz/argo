@@ -67,7 +67,7 @@ where
     fn garble(
         parent_nonce: &mut Nonce,
         rng: &mut StdRng,
-        aux: Option<&Self::Aux>,
+        aux: Option<Self::Aux>,
         input_mac_key: &InputMacKey<F>,
     ) -> Result<(Self, OutputMacKey<Config, KAPPA>), GarbleError> {
         assert_eq!(Config::COEFF_A, F::ZERO);
@@ -185,22 +185,22 @@ where
 
             // Scale z coordinate by `a`
             let z_table =
-                bivariate::Table::garble(&mut nonce, rng, Some(&z_aux(key, a)?), input_mac_key)?.0;
+                bivariate::Table::garble(&mut nonce, rng, Some(z_aux(key, a)?), input_mac_key)?.0;
             z.push(z_table);
 
             // Scale x coordinate by a^2
             let a2 = a.square();
             let x_table =
-                bivariate::Table::garble(&mut nonce, rng, Some(&x_aux(key, a2)?), input_mac_key)?.0;
+                bivariate::Table::garble(&mut nonce, rng, Some(x_aux(key, a2)?), input_mac_key)?.0;
             x.push(x_table);
 
-            if *is_full {
+            if is_full {
                 // Scale y coordinate by a^3
                 let a3 = a2 * a;
                 let y_table = bivariate::Table::garble(
                     &mut nonce,
                     rng,
-                    Some(&y_aux(key, a3)?),
+                    Some(y_aux(key, a3)?),
                     input_mac_key,
                 )?
                 .0;
@@ -210,9 +210,9 @@ where
 
         Ok((
             Self {
-                is_full: *is_full,
+                is_full,
                 x,
-                y: if *is_full { Some(y) } else { None },
+                y: if is_full { Some(y) } else { None },
                 z,
             },
             output_mac_key.clone(),
@@ -314,7 +314,7 @@ where
     let garbling_table = Table::garble(
         &mut Nonce::new(),
         &mut rng,
-        Some(&(is_full, output_mac_key)),
+        Some((is_full, output_mac_key)),
         &input_mac_key,
     )
     .unwrap()
@@ -391,7 +391,7 @@ where
     let original_table = Table::<C, KAPPA>::garble(
         &mut Nonce::new(),
         &mut rng,
-        Some(&(is_full, output_mac_key)),
+        Some((is_full, output_mac_key)),
         &input_mac_key,
     )
     .unwrap()

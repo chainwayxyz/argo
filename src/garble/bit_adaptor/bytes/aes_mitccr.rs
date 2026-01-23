@@ -129,13 +129,13 @@ impl Circuit<bool, Bit16ByteMac, bool, Bit16ByteMac>
     fn garble(
         parent_nonce: &mut Nonce,
         _rng: &mut StdRng,
-        aux: Option<&Self::Aux>,
+        aux: Option<Self::Aux>,
         input_mac_key: &Bit16ByteMacKey,
     ) -> Result<(Self, Bit16ByteMacKey), GarbleError> {
         let Aux { gid, phi } = aux
             .ok_or_else(|| GarbleError::AuxError(type_name::<Self::Aux>(), type_name::<Self>()))?;
 
-        let dst = Self::derive_dst(gid, parent_nonce);
+        let dst = Self::derive_dst(&gid, parent_nonce);
 
         // The output_mac_key is derived s.t.
         // - output_mac_key.phi = phi, and
@@ -147,7 +147,7 @@ impl Circuit<bool, Bit16ByteMac, bool, Bit16ByteMac>
                 bool,
                 Bit16ByteMac,
                 Bit16ByteMac,
-            >>::derive_output_mac_key(input_mac_key, Some(&dst), parent_nonce, phi)?;
+            >>::derive_output_mac_key(input_mac_key, Some(&dst), parent_nonce, &phi)?;
 
         // We encrypt the encoding of output_mac_key.encode(true), using
         // input_mac_key.encode(true) as the key. This ciphertext is stored
@@ -164,7 +164,7 @@ impl Circuit<bool, Bit16ByteMac, bool, Bit16ByteMac>
 
         Ok((
             Self {
-                gid: Some(*gid),
+                gid: Some(gid),
                 ciphertext,
             },
             output_mac_key,
@@ -229,7 +229,7 @@ fn test_aes_mitccr_bytes_to_bytes_adaptor() {
             Table::<AesMiTCCR, Bit16ByteMac, Bit16ByteMac>::garble(
                 &mut Nonce::new(),
                 &mut rng,
-                Some(&aux),
+                Some(aux),
                 &input_mac_key,
             )
             .unwrap();

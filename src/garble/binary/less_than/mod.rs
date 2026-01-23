@@ -69,7 +69,7 @@ where
     fn garble(
         parent_nonce: &mut crate::garble::Nonce,
         rng: &mut ark_std::rand::prelude::StdRng,
-        aux: Option<&Self::Aux>,
+        aux: Option<Self::Aux>,
         input_mac_key: &DigitMacKey<F>,
     ) -> Result<(Self, IdentityMacKey), GarbleError> {
         let mut nonce = parent_nonce.fork();
@@ -88,7 +88,7 @@ where
             input_mac_key
                 .iter()
                 .map(|input_mac_key| {
-                    bit_adaptor::Table::garble(&mut nonce, rng, Some(&phi), input_mac_key)
+                    bit_adaptor::Table::garble(&mut nonce, rng, Some(phi), input_mac_key)
                 })
                 .collect::<Result<Vec<_>, _>>()? // Collect Result first
                 .into_iter()
@@ -117,7 +117,7 @@ where
             let mac_false = output_mac_key.encode(&false);
             let pad: Fq = AesCtr::hash_to_field(*mac_false, &nonce);
 
-            *secret + pad
+            secret + pad
         };
 
         let table = Self {
@@ -126,7 +126,7 @@ where
             adaptors: adaptors.0,
             gates,
             enc_s,
-            gid: *gid,
+            gid,
             _marker: PhantomData,
         };
 
@@ -210,7 +210,7 @@ where
     let table = Table::<F>::garble(
         &mut Nonce::new(),
         &mut rng,
-        Some(&(secret, gid)),
+        Some((secret, gid)),
         &input_mac_key,
     )
     .unwrap()

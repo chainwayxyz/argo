@@ -88,7 +88,7 @@ impl Circuit<bool, Bit16ByteMac, bool, Bit16ByteMac> for Table<AesCtr, Bit16Byte
     fn garble(
         parent_nonce: &mut Nonce,
         _rng: &mut StdRng,
-        aux: Option<&Self::Aux>,
+        aux: Option<Self::Aux>,
         input_mac_key: &Bit16ByteMacKey,
     ) -> Result<(Self, Bit16ByteMacKey), GarbleError> {
         let phi = aux
@@ -104,7 +104,7 @@ impl Circuit<bool, Bit16ByteMac, bool, Bit16ByteMac> for Table<AesCtr, Bit16Byte
                 bool,
                 Bit16ByteMac,
                 Bit16ByteMac,
-            >>::derive_output_mac_key(input_mac_key, None, parent_nonce, phi)?;
+            >>::derive_output_mac_key(input_mac_key, None, parent_nonce, &phi)?;
 
         // We encrypt the encoding of output_mac_key.encode(true), using
         // input_mac_key.encode(true) as the key. This ciphertext is stored
@@ -178,7 +178,7 @@ fn test_aes_ctr_bytes_to_bytes_adaptor() {
         let (garbling_table, output_mac_key) = Table::<AesCtr, Bit16ByteMac, Bit16ByteMac>::garble(
             &mut Nonce::new(),
             &mut rng,
-            Some(&phi),
+            Some(phi),
             &input_mac_key,
         )
         .unwrap();

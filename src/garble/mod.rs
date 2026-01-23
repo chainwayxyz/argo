@@ -28,7 +28,7 @@ where
     fn garble(
         parent_nonce: &mut Nonce,
         rng: &mut StdRng,
-        aux: Option<&Self::Aux>,
+        aux: Option<Self::Aux>,
         input_mac_key: &<InputMac as Mac<InputValue>>::Key,
     ) -> Result<(Self, <OutputMac as Mac<OutputValue>>::Key), GarbleError>;
 

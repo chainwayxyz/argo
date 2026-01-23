@@ -104,7 +104,7 @@ impl Circuit<Input, InputMac, bool, Bit16ByteMac> for Table {
     fn garble(
         parent_nonce: &mut Nonce,
         rng: &mut ark_std::rand::prelude::StdRng,
-        aux: Option<&Self::Aux>,
+        aux: Option<Self::Aux>,
         input_mac_key: &<InputMac as Mac<Input>>::Key,
     ) -> Result<(Self, <Bit16ByteMac as Mac<bool>>::Key), GarbleError> {
         let mut nonce = parent_nonce.fork();
@@ -217,7 +217,7 @@ fn test_gate() {
         let input_mac = input_mac_key.encode(&input);
 
         let (circuit, output_mac_key) =
-            Table::garble(&mut Nonce::new(), &mut rng, Some(&gid), &input_mac_key).unwrap();
+            Table::garble(&mut Nonce::new(), &mut rng, Some(gid), &input_mac_key).unwrap();
         clear_set();
 
         let output_mac = circuit

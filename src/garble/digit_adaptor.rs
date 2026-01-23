@@ -48,7 +48,7 @@ where
     fn garble(
         parent_nonce: &mut Nonce,
         rng: &mut StdRng,
-        aux: Option<&Self::Aux>,
+        aux: Option<Self::Aux>,
         input_mac_key: &InputMacKey<F>,
     ) -> Result<(Self, OutputMacKey<F>), GarbleError> {
         let mut nonce = parent_nonce.fork();
@@ -114,7 +114,7 @@ where
     let input_mac = input_mac_key.encode(&input);
 
     let (table, output_mac_key) =
-        Table::garble(&mut Nonce::new(), &mut rng, Some(&phi), &input_mac_key).unwrap();
+        Table::garble(&mut Nonce::new(), &mut rng, Some(phi), &input_mac_key).unwrap();
     clear_set();
 
     let expected_output_mac = output_mac_key.encode(&output);

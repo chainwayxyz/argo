@@ -81,7 +81,7 @@ impl Table {
             let table = less_than::Table::<Fq>::garble(
                 parent_nonce,
                 rng,
-                Some(&(*secret, *gid)),
+                Some((*secret, *gid)),
                 input_mac_key,
             )?
             .0;
@@ -96,7 +96,7 @@ impl Table {
         let a_curve_check = bivariate::Table::garble(
             parent_nonce,
             rng,
-            Some(&curve_membership_poly::<g1::Config>(*secret)),
+            Some(curve_membership_poly::<g1::Config>(*secret)),
             // Input MAC key for the (x, y) coordinates of `A`
             &input_mac_key.A,
         )?
@@ -114,7 +114,7 @@ impl Table {
                 let table = less_than::Table::<Fq>::garble(
                     parent_nonce,
                     rng,
-                    Some(&(*secret, *gid)),
+                    Some((*secret, *gid)),
                     input_mac_key,
                 )?
                 .0;
@@ -130,7 +130,7 @@ impl Table {
         let b_curve_check = bivariate::Table::garble(
             parent_nonce,
             rng,
-            Some(&curve_membership_poly::<g2::Config>(
+            Some(curve_membership_poly::<g2::Config>(
                 Fq2::from_base_prime_field(*secret),
             )),
             // Input MAC key for the (x, y) coordinates of `B`
@@ -141,14 +141,14 @@ impl Table {
         // Garbling table to check that `B` is in the G2 subgroup.
         // This table leaks `secret` if `B` is not in the G2 subgroup.
         let b_g2_check =
-            g2_subgroup_check::Table::garble(parent_nonce, rng, Some(secret), b_ec_mac_key)?.0;
+            g2_subgroup_check::Table::garble(parent_nonce, rng, Some(*secret), b_ec_mac_key)?.0;
 
         let mut c_range_check = Vec::with_capacity(2);
         for input_mac_key in [&input_mac_key.C.x, &input_mac_key.C.y].iter() {
             let table = less_than::Table::<Fq>::garble(
                 parent_nonce,
                 rng,
-                Some(&(*secret, *gid)),
+                Some((*secret, *gid)),
                 input_mac_key,
             )?
             .0;
@@ -163,7 +163,7 @@ impl Table {
         let c_curve_check = bivariate::Table::garble(
             parent_nonce,
             rng,
-            Some(&curve_membership_poly::<g1::Config>(*secret)),
+            Some(curve_membership_poly::<g1::Config>(*secret)),
             // Input MAC key for the (x, y) coordinates of `C`
             &input_mac_key.C,
         )?
@@ -174,7 +174,7 @@ impl Table {
         let x_range_check = less_than::Table::<Fr>::garble(
             parent_nonce,
             rng,
-            Some(&(*secret, *gid)),
+            Some((*secret, *gid)),
             &input_mac_key.x,
         )?
         .0;

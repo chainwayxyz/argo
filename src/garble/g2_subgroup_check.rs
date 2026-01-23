@@ -40,10 +40,10 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
     fn garble(
         _parent_nonce: &mut super::Nonce,
         _rng: &mut StdRng,
-        aux: Option<&Self::Aux>,
+        aux: Option<Self::Aux>,
         input_mac_key: &<InputMac as crate::mac::Mac<Input>>::Key,
     ) -> Result<(Self, <IdentityMac<Output> as crate::mac::Mac<Output>>::Key), GarbleError> {
-        let secret = *aux
+        let secret = aux
             .ok_or_else(|| GarbleError::AuxError(type_name::<Self::Aux>(), type_name::<Self>()))?;
         let enc_s = secret
             + conditional_reveal::Table::<KAPPA_B>::hash_packed_phis(
@@ -145,7 +145,7 @@ fn test_g2_subgroup_check() {
     let input_mac_key = <[EndoMacKey<g2::Config>; KAPPA_B]>::random_key(&mut rng);
     let input_mac = input_mac_key.encode(&input);
 
-    let table = Table::garble(&mut Nonce::new(), &mut rng, Some(&secret), &input_mac_key)
+    let table = Table::garble(&mut Nonce::new(), &mut rng, Some(secret), &input_mac_key)
         .unwrap()
         .0;
 
@@ -288,7 +288,7 @@ fn test_g2_subgroup_check_decoding_error() {
 
     let input_mac = input_mac_key.encode(&input);
 
-    let table = Table::garble(&mut Nonce::new(), &mut rng, Some(&secret), &input_mac_key)
+    let table = Table::garble(&mut Nonce::new(), &mut rng, Some(secret), &input_mac_key)
         .unwrap()
         .0;
 

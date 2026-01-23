@@ -60,7 +60,7 @@ where
     fn garble(
         parent_nonce: &mut Nonce,
         _rng: &mut StdRng,
-        aux: Option<&Self::Aux>,
+        aux: Option<Self::Aux>,
         input_mac_key: &Bit16ByteMacKey,
     ) -> Result<(Self, GroupMacKey<G>), GarbleError> {
         let mut nonce = parent_nonce.fork();
@@ -77,7 +77,7 @@ where
             bool,
             Bit16ByteMac,
             BitGroupMac<G>,
-        >>::derive_output_mac_key(input_mac_key, None, &nonce, phi)?;
+        >>::derive_output_mac_key(input_mac_key, None, &nonce, &phi)?;
 
         // We encrypt the encoding of output_mac_key.encode(true), using
         // input_mac_key.encode(true) as the key. This ciphertext is stored
@@ -235,7 +235,7 @@ where
             Table::<AesCtr, Bit16ByteMac, BitGroupMac<G>>::garble(
                 &mut Nonce::new(),
                 &mut rng,
-                Some(&phi),
+                Some(phi),
                 &input_mac_key,
             )
             .unwrap();

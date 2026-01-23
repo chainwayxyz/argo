@@ -119,7 +119,7 @@ where
     fn garble(
         parent_nonce: &mut Nonce,
         rng: &mut StdRng,
-        aux: Option<&Self::Aux>,
+        aux: Option<Self::Aux>,
         input_mac_key: &InputMacKey<C>,
     ) -> Result<(Self, OutputMacKey<C, KAPPA>), GarbleError> {
         let (point, phis) = aux
@@ -138,7 +138,7 @@ where
                 AesCtr,
                 Bit16ByteMac,
                 BitGroupMac<C::ScalarField>,
-            >::garble(&mut nonce, rng, Some(&phi), bit_mac_key)?;
+            >::garble(&mut nonce, rng, Some(phi), bit_mac_key)?;
             adaptors.push(table);
             adapted_mac_key.push(mac_key);
         }
@@ -151,14 +151,14 @@ where
 
         let a = input_mac_key.phi;
 
-        let (t, output_mac_key) = Self::output_mac_key_from_phis(rng, &input_mac_key, phis);
+        let (t, output_mac_key) = Self::output_mac_key_from_phis(rng, &input_mac_key, &phis);
 
         // output_mac_key.phi.endo(P) - [a]t
         let s: Vec<Projective<C>> = output_mac_key
             .iter()
             .map(|key| &key.phi)
             .zip(t.iter())
-            .map(|(phi, t)| phi.endo(*point) - t.mul(a))
+            .map(|(phi, t)| phi.endo(point) - t.mul(a))
             .collect();
         let s = Projective::<C>::normalize_batch(&s);
         // This unwrap cannot fail because `output_mac_key` is a fixed
@@ -168,9 +168,7 @@ where
         Ok((
             Self {
                 adaptors,
-                point: *point,
-                // This unwrap cannot fail because `output_mac_key` is a fixed
-                // array of `[EndoMacKey; KAPPA]`.
+                point,
                 s,
                 t,
             },
@@ -246,7 +244,7 @@ fn test_scalar_mul_fixed() {
     let (circuit, output_mac_key) = Table::garble(
         &mut Nonce::new(),
         &mut rng,
-        Some(&(point.into_affine(), phis)),
+        Some((point.into_affine(), phis)),
         &input_mac_key,
     )
     .unwrap();

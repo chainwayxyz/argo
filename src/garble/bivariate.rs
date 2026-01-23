@@ -235,7 +235,7 @@ where
     fn garble(
         parent_nonce: &mut super::Nonce,
         rng: &mut StdRng,
-        aux: Option<&Self::Aux>,
+        aux: Option<Self::Aux>,
         input_mac_key: &<InputMac<F> as Mac<Input<F>>>::Key,
     ) -> Result<(Self, <IdentityMac<F> as Mac<F>>::Key), GarbleError> {
         let mut nonce = parent_nonce.fork();
@@ -255,7 +255,7 @@ where
             if i > 0 {
                 let i = i - 1;
                 let (table, output_mac_key) =
-                    digit_adaptor::Table::garble(&mut nonce, rng, Some(&z), &input_mac_key.x)?;
+                    digit_adaptor::Table::garble(&mut nonce, rng, Some(z), &input_mac_key.x)?;
                 let r = output_mac_key.from_bits_k()?;
 
                 let monomial = Monomial(i, j);
@@ -264,7 +264,7 @@ where
             } else if j > 0 {
                 let j = j - 1;
                 let (table, output_mac_key) =
-                    digit_adaptor::Table::garble(&mut nonce, rng, Some(&z), &input_mac_key.y)?;
+                    digit_adaptor::Table::garble(&mut nonce, rng, Some(z), &input_mac_key.y)?;
                 let r = output_mac_key.from_bits_k()?;
 
                 let monomial = Monomial(i, j);
@@ -314,9 +314,14 @@ where
 
     let input_mac_key = InputMacKey::random_key(&mut rng);
 
-    let garbling_table = Table::garble(&mut Nonce::new(), &mut rng, Some(&poly), &input_mac_key)
-        .unwrap()
-        .0;
+    let garbling_table = Table::garble(
+        &mut Nonce::new(),
+        &mut rng,
+        Some(poly.clone()),
+        &input_mac_key,
+    )
+    .unwrap()
+    .0;
     clear_set();
 
     let input = <InputMac<F> as Mac<Input<F>>>::random_input(&mut rng);
@@ -399,7 +404,7 @@ where
     poly.insert(Monomial::new(3, 0), secret);
     poly.insert(Monomial::new(0, 2), -secret);
 
-    let table = Table::garble(&mut Nonce::new(), &mut rng, Some(&poly), &input_mac_key)
+    let table = Table::garble(&mut Nonce::new(), &mut rng, Some(poly), &input_mac_key)
         .unwrap()
         .0;
 

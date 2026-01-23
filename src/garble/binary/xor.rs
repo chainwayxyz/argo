@@ -60,7 +60,7 @@ impl Circuit<Input, InputMac, bool, OutputMac> for Table {
     fn garble(
         _parent_nonce: &mut Nonce,
         _rng: &mut StdRng,
-        _aux: Option<&Self::Aux>,
+        _aux: Option<Self::Aux>,
         input_mac_key: &<BinaryInputMac<Xor> as Mac<BinaryInput<Xor>>>::Key,
     ) -> Result<(Self, <OutputMac as Mac<bool>>::Key), GarbleError> {
         Ok((Self, input_mac_key.output_mac_key()))

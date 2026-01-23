@@ -215,7 +215,7 @@ pub fn garble_groth16(
     let table = Table::garble(
         &mut nonce,
         &mut rng,
-        Some(&(secret, gid, verifier_key)),
+        Some((secret, gid, verifier_key)),
         input_mac_key,
     )?
     .0;
@@ -257,7 +257,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
     fn garble(
         parent_nonce: &mut Nonce,
         rng: &mut StdRng,
-        aux: Option<&Self::Aux>,
+        aux: Option<Self::Aux>,
         input_mac_key: &InputMacKey,
     ) -> Result<(Self, <IdentityMac<Output> as Mac<Output>>::Key), GarbleError> {
         // The secret that will be conditionally revealed, and the Groth16 verifier key
@@ -294,7 +294,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
             parent_nonce,
             rng,
             // The a_ec_mac_key that we sampled earlier
-            Some(&(true, a_ec_mac_key.clone())),
+            Some((true, a_ec_mac_key.clone())),
             // Input MAC key for the (x, y) coordinates of `A`
             &input_mac_key.A,
         )?
@@ -305,7 +305,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
             parent_nonce,
             rng,
             // The b_ec_mac_key that we sampled earlier
-            Some(&(false, b_ec_mac_key.clone())),
+            Some((false, b_ec_mac_key.clone())),
             // Input MAC key for the (x, y) coordinates of `B`
             &input_mac_key.B,
         )?
@@ -316,7 +316,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
             parent_nonce,
             rng,
             // The c_ec_mac_key that we sampled earlier
-            Some(&(false, c_ec_mac_key.clone())),
+            Some((false, c_ec_mac_key.clone())),
             // Input MAC key for the (x, y) coordinates of `C`
             &input_mac_key.C,
         )?
@@ -339,15 +339,15 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
             scalar_mul::fixed::Table::garble(
                 parent_nonce,
                 rng,
-                Some(&(verifier_key.G1.into(), c_phis)),
+                Some((verifier_key.G1.into(), c_phis)),
                 input_mac_key,
             )?
         };
 
         let input_validity = {
             let aux = input_validity::Aux {
-                secret: *secret,
-                gid: *gid,
+                secret,
+                gid,
                 b_ec_mac_key: Box::new(b_ec_mac_key),
             };
             input_validity::Table::garble(parent_nonce, rng, &aux, input_mac_key)?
@@ -361,7 +361,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         // Garbling table for the conditional revelation of `secret`.
         let conditional_reveal = {
             let input_mac_key = conditional_reveal::Table::groth16_input_mac_key(
-                verifier_key,
+                &verifier_key,
                 &pairing_output_mac_key,
                 &c_ec_mac_key,
                 &x_G_output_mac_key,
@@ -379,8 +379,8 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
                 c_ec_mac,
                 pairing,
                 conditional_reveal,
-                verifier_key: *verifier_key,
-                gid: *gid,
+                verifier_key,
+                gid,
             },
             IdentityMacKey,
         ))
@@ -483,7 +483,7 @@ fn test_groth16(mut rng: &mut StdRng, input: &Input, vk: &VerifierKey, secret: F
     let table = Table::garble(
         &mut Nonce::new(),
         &mut rng,
-        Some(&(secret, gid, vk.clone())),
+        Some((secret, gid, vk.clone())),
         &input_mac_key,
     )
     .unwrap()
