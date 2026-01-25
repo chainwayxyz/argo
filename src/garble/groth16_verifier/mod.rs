@@ -168,9 +168,9 @@ impl MacKey<Input, InputMac> for InputMacKey {
     #[cfg(test)]
     fn decode(&self, mac: &InputMac) -> Input {
         Input {
-            A: self.A.decode(&mac.A).into(),
-            B: self.B.decode(&mac.B).into(),
-            C: self.C.decode(&mac.C).into(),
+            A: self.A.decode(&mac.A),
+            B: self.B.decode(&mac.B),
+            C: self.C.decode(&mac.C),
             x: self.x.decode(&mac.x),
         }
     }
@@ -339,7 +339,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
             scalar_mul::fixed::Table::garble(
                 parent_nonce,
                 rng,
-                Some((verifier_key.G1.into(), c_phis)),
+                Some((verifier_key.G1, c_phis)),
                 input_mac_key,
             )?
         };
@@ -397,22 +397,13 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         let VerifierKey { H1, H2, .. } = self.verifier_key;
 
         // Evaluate the field_to_ec_mac table for `A`.
-        let a_ec_mac = self
-            .a_ec_mac
-            .evaluate(parent_nonce, &A.into(), &input_mac.A)?
-            .1;
+        let a_ec_mac = self.a_ec_mac.evaluate(parent_nonce, &A, &input_mac.A)?.1;
 
         // Evaluate the field_to_ec_mac table for `B`.
-        let b_ec_mac = self
-            .b_ec_mac
-            .evaluate(parent_nonce, &B.into(), &input_mac.B)?
-            .1;
+        let b_ec_mac = self.b_ec_mac.evaluate(parent_nonce, &B, &input_mac.B)?.1;
 
         // Evaluate the field_to_ec_mac table for `C`.
-        let c_ec_mac = self
-            .c_ec_mac
-            .evaluate(parent_nonce, &C.into(), &input_mac.C)?
-            .1;
+        let c_ec_mac = self.c_ec_mac.evaluate(parent_nonce, &C, &input_mac.C)?.1;
 
         let x_G_mac = self.x_G.evaluate(parent_nonce, &x, &input_mac.x)?.1;
 
@@ -477,13 +468,13 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
 
 #[cfg(test)]
 fn test_groth16(mut rng: &mut StdRng, input: &Input, vk: &VerifierKey, secret: Fq) -> Fq {
-    let gid = GID::random(&mut rng);
+    let gid = GID::random(rng);
 
     let input_mac_key = InputMacKey::random_key(&mut rng);
     let table = Table::garble(
         &mut Nonce::new(),
-        &mut rng,
-        Some((secret, gid, vk.clone())),
+        rng,
+        Some((secret, gid, *vk)),
         &input_mac_key,
     )
     .unwrap()
@@ -491,9 +482,9 @@ fn test_groth16(mut rng: &mut StdRng, input: &Input, vk: &VerifierKey, secret: F
     aes_ctr_clear_set();
     aes_mitccr_clear_set();
 
-    let input_mac = input_mac_key.encode(&input);
+    let input_mac = input_mac_key.encode(input);
     let output = table
-        .evaluate(&mut Nonce::new(), &input, &input_mac)
+        .evaluate(&mut Nonce::new(), input, &input_mac)
         .unwrap()
         .0;
     aes_ctr_clear_set();

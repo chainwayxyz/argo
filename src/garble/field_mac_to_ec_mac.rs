@@ -439,15 +439,15 @@ where
 
 #[test]
 fn test_A_serde_roundtrip() {
-    test_serde_roundtrip::<ark_bn254::g1::Config, KAPPA_A>(&"A_field_to_ec_mac".to_string(), true);
+    test_serde_roundtrip::<ark_bn254::g1::Config, KAPPA_A>(&"A_field_to_ec_mac", true);
 }
 
 #[test]
 fn test_B_serde_roundtrip() {
-    test_serde_roundtrip::<ark_bn254::g2::Config, KAPPA_B>(&"B_field_to_ec_mac".to_string(), false);
+    test_serde_roundtrip::<ark_bn254::g2::Config, KAPPA_B>(&"B_field_to_ec_mac", false);
 }
 
 #[test]
 fn test_C_serde_roundtrip() {
-    test_serde_roundtrip::<ark_bn254::g1::Config, KAPPA_B>(&"C_field_to_ec_mac".to_string(), false);
+    test_serde_roundtrip::<ark_bn254::g1::Config, KAPPA_B>(&"C_field_to_ec_mac", false);
 }

@@ -54,7 +54,7 @@ where
     #[inline(always)]
     pub(crate) fn from_bits_k(&self) -> Result<G, GarbleError> {
         let ks = self.iter().map(|key| key.k);
-        G::from_bits(ks).ok_or_else(|| GarbleError::DigitMacKeyReconstructionError)
+        G::from_bits(ks).ok_or(GarbleError::DigitMacKeyReconstructionError)
     }
 
     pub(crate) fn try_into_group_mac_key(&self) -> Option<GroupMacKey<G>> {

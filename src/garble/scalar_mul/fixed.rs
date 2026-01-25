@@ -122,8 +122,10 @@ where
         aux: Option<Self::Aux>,
         input_mac_key: &InputMacKey<C>,
     ) -> Result<(Self, OutputMacKey<C, KAPPA>), GarbleError> {
-        let (point, phis) = aux
-            .ok_or_else(|| GarbleError::AuxError(type_name::<Self::Aux>(), type_name::<Self>()))?;
+        let (point, phis) = aux.ok_or(GarbleError::AuxError(
+            type_name::<Self::Aux>(),
+            type_name::<Self>(),
+        ))?;
         let mut nonce = parent_nonce.fork();
 
         // Adaptor tables for the scalar
@@ -147,7 +149,7 @@ where
         // Reconstruct GroupMacKey from DigitMacKey
         let input_mac_key = input_mac_key
             .try_into_group_mac_key()
-            .ok_or_else(|| GarbleError::DigitMacKeyReconstructionError)?;
+            .ok_or(GarbleError::DigitMacKeyReconstructionError)?;
 
         let a = input_mac_key.phi;
 

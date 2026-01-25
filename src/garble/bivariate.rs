@@ -26,9 +26,7 @@ use crate::{garble::Nonce, utils::aes_hash::aes_ctr::clear_set};
 use ark_std::rand::SeedableRng;
 
 /// Powers of a monomial where (i, j) represents x^i y^j.
-#[derive(
-    Debug, PartialEq, Eq, Clone, Copy, PartialOrd, CanonicalDeserialize, CanonicalSerialize,
-)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, CanonicalDeserialize, CanonicalSerialize)]
 pub(crate) struct Monomial(u8, u8);
 
 impl Monomial {
@@ -52,15 +50,16 @@ impl Monomial {
     }
 }
 
+impl PartialOrd for Monomial {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl Ord for Monomial {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.weight().cmp(&other.weight())
     }
-}
-
-struct AffineFunction<F> {
-    z: F,
-    r: F,
 }
 
 /// true => x, false => y
@@ -115,12 +114,24 @@ impl<F: Field> Poly<F> {
 
     pub(crate) fn biquadratic(coeffs: [Option<F>; 6]) -> Self {
         let mut poly: Poly<F> = Self::default();
-        coeffs[0].map(|coeff| poly.insert(Monomial::constant(), coeff));
-        coeffs[1].map(|coeff| poly.insert(Monomial(1, 0), coeff)); // x
-        coeffs[2].map(|coeff| poly.insert(Monomial(0, 1), coeff)); // y
-        coeffs[3].map(|coeff| poly.insert(Monomial(2, 0), coeff)); // x^2
-        coeffs[4].map(|coeff| poly.insert(Monomial(1, 1), coeff)); // xy
-        coeffs[5].map(|coeff| poly.insert(Monomial(0, 2), coeff)); // y^2
+        if let Some(coeff) = coeffs[0] {
+            poly.insert(Monomial::constant(), coeff)
+        }
+        if let Some(coeff) = coeffs[1] {
+            poly.insert(Monomial(1, 0), coeff)
+        } // x
+        if let Some(coeff) = coeffs[2] {
+            poly.insert(Monomial(0, 1), coeff)
+        } // y
+        if let Some(coeff) = coeffs[3] {
+            poly.insert(Monomial(2, 0), coeff)
+        } // x^2
+        if let Some(coeff) = coeffs[4] {
+            poly.insert(Monomial(1, 1), coeff)
+        } // xy
+        if let Some(coeff) = coeffs[5] {
+            poly.insert(Monomial(0, 2), coeff)
+        } // y^2
 
         poly
     }
@@ -141,10 +152,6 @@ impl<F: Field> Poly<F> {
 
     pub(crate) fn iter(&self) -> std::slice::Iter<'_, (Option<Monomial>, F)> {
         self.0.iter()
-    }
-
-    pub(crate) fn iter_mut(&mut self) -> std::slice::IterMut<'_, (Option<Monomial>, F)> {
-        self.0.iter_mut()
     }
 }
 
@@ -323,26 +330,21 @@ where
 }
 
 #[cfg(test)]
-fn test_biquadratic<F>(coeffs: [Option<F>; 6], mut rng: &mut StdRng)
+fn test_biquadratic<F>(coeffs: [Option<F>; 6], rng: &mut StdRng)
 where
     F: Field + NumBits + FromBits<bool, F> + Random + ToBits + FromBits<F, F>,
     F::BasePrimeField: FromLeBytesModOrder,
 {
     let poly = Poly::biquadratic(coeffs);
 
-    let input_mac_key = InputMacKey::random_key(&mut rng);
+    let input_mac_key = InputMacKey::random_key(rng);
 
-    let garbling_table = Table::garble(
-        &mut Nonce::new(),
-        &mut rng,
-        Some(poly.clone()),
-        &input_mac_key,
-    )
-    .unwrap()
-    .0;
+    let garbling_table = Table::garble(&mut Nonce::new(), rng, Some(poly.clone()), &input_mac_key)
+        .unwrap()
+        .0;
     clear_set();
 
-    let input = <InputMac<F> as Mac<Input<F>>>::random_input(&mut rng);
+    let input = <InputMac<F> as Mac<Input<F>>>::random_input(rng);
     let input_mac = input_mac_key.encode(&input);
 
     let output = poly.eval(input.x, input.y);

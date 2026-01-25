@@ -177,7 +177,7 @@ impl<G: GLVConfig> EndoScalar<G> {
             Self::NegInf(_) => {
                 let mut coeffs: [Option<G::BaseField>; 6] = poly.to_biquadratic_coeffs();
                 coeffs.iter_mut().for_each(|coeff| {
-                    if let Some(_) = coeff {
+                    if coeff.is_some() {
                         *coeff = Some(G::BaseField::ZERO);
                     }
                 });

@@ -233,7 +233,7 @@ impl Table {
         // `secret` if `A` is not a valid curve point.
         let a_curve_check = self
             .a_curve_check
-            .evaluate(parent_nonce, &A.into(), &input_mac.A)?
+            .evaluate(parent_nonce, &A, &input_mac.A)?
             .0;
         // If `A` is not a valid curve point, return `secret` early
         if !a_curve_check.is_zero() {
@@ -269,7 +269,7 @@ impl Table {
         // `secret` if `B` is not a valid curve point.
         let b_curve_check = self
             .b_curve_check
-            .evaluate(parent_nonce, &B.into(), &input_mac.B)?
+            .evaluate(parent_nonce, &B, &input_mac.B)?
             .0;
         // If `B` is not a valid curve point, return `secret` early
         if !b_curve_check.is_zero() {
@@ -313,7 +313,7 @@ impl Table {
         // `secret` if `C` is not a valid curve point.
         let c_curve_check = self
             .c_curve_check
-            .evaluate(parent_nonce, &C.into(), &input_mac.C)?
+            .evaluate(parent_nonce, &C, &input_mac.C)?
             .0;
         // If `C` is not a valid curve point, return `secret` early
         if !c_curve_check.is_zero() {

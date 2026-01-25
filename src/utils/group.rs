@@ -138,18 +138,3 @@ pub(crate) fn get_curve_point_not_in_g2(rng: &mut StdRng) -> Affine<g2::Config> 
         }
     }
 }
-
-#[inline]
-/// Writes the little-endian bytes of a bigint into a buf.
-///
-/// # Panics
-///
-/// Panics if buf.len() != N * 8
-pub(crate) fn to_bytes_le<const N: usize>(bigint: &BigInt<N>, buf: &mut Vec<u8>) {
-    let array_map = bigint.0.iter().map(|limb| limb.to_le_bytes());
-    assert_eq!(buf.len(), N * 8);
-
-    for limb in array_map {
-        buf.extend_from_slice(&limb);
-    }
-}

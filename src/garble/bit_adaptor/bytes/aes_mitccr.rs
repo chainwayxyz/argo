@@ -35,7 +35,7 @@ where
         parent_nonce: &mut Nonce,
         message: &Mac1,
     ) -> Result<Self::Ciphertext, GarbleError> {
-        let dst = dst.ok_or_else(|| GarbleError::MissingDST)?;
+        let dst = dst.ok_or(GarbleError::MissingDST)?;
 
         let input_mac: Bit16ByteMac = self.clone().into();
         let output_mac: Bit16ByteMac = message.clone().into();
