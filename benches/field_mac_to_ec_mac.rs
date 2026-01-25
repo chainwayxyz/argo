@@ -48,7 +48,7 @@ where
             field_mac_to_ec_mac::Table::garble(
                 &mut Nonce::new(),
                 &mut rng,
-                Some(&(is_full, output_mac_key.clone())),
+                Some((is_full, output_mac_key.clone())),
                 &input_mac_key,
             )
             .unwrap();
@@ -59,7 +59,7 @@ where
     let table = field_mac_to_ec_mac::Table::garble(
         &mut Nonce::new(),
         &mut rng,
-        Some(&(is_full, output_mac_key.clone())),
+        Some((is_full, output_mac_key.clone())),
         &input_mac_key,
     )
     .unwrap()

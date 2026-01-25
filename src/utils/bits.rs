@@ -17,7 +17,7 @@ pub trait FromBits<B, V> {
 
 pub trait NumBits {
     /// The number of bits in the bit representation of this value.
-    fn num_bits() -> u32;
+    const NUM_BITS: usize;
 }
 
 pub trait ToBits {
@@ -97,24 +97,15 @@ impl FromBits<Fq2, Fq2> for Fq2 {
 }
 
 impl NumBits for Fq {
-    #[inline]
-    fn num_bits() -> u32 {
-        Self::MODULUS_BIT_SIZE
-    }
+    const NUM_BITS: usize = Self::MODULUS_BIT_SIZE as usize;
 }
 
 impl NumBits for Fr {
-    #[inline]
-    fn num_bits() -> u32 {
-        Self::MODULUS_BIT_SIZE
-    }
+    const NUM_BITS: usize = Self::MODULUS_BIT_SIZE as usize;
 }
 
 impl NumBits for Fq2 {
-    #[inline]
-    fn num_bits() -> u32 {
-        Fq::MODULUS_BIT_SIZE * 2
-    }
+    const NUM_BITS: usize = Fq::MODULUS_BIT_SIZE as usize * 2;
 }
 
 impl ToBits for Fq {

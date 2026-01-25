@@ -10,7 +10,7 @@ use ark_ec::{
     scalar_mul::glv::GLVConfig,
     short_weierstrass::{Affine, Projective},
 };
-use ark_ff::{AdditiveGroup, Field, PrimeField, UniformRand};
+use ark_ff::{AdditiveGroup, Field, PrimeField, UniformRand, Zero};
 use ark_std::rand::rngs::StdRng;
 use lazy_static::lazy_static;
 use num_bigint::BigInt;
@@ -232,21 +232,19 @@ impl Table {
     // Let G' = r * G
     // Let K_i = (x * r_i * H) + GENERATOR_EXPONENT^i * G'
     fn derive_b_ks(g2_b_ks: &[Affine<g2::Config>; KAPPA_B]) -> [Affine<g2::Config>; KAPPA_B] {
-        let b_ks = g2_b_ks
-            .iter()
+        let mut b_ks = [Projective::<g2::Config>::zero(); KAPPA_B];
+        b_ks.iter_mut()
+            .zip(g2_b_ks.iter())
             .enumerate()
-            .map(|(i, g2_b_k)| {
-                *g2_b_k
-                    + R_MUL_COFACTOR_GENERATOR
-                        .mul_bigint(
-                            BigInt::from(GENERATOR_EXPONENT as u8)
-                                .pow(i as u32)
-                                .to_u64_digits()
-                                .1,
-                        )
-                        .into_affine()
-            })
-            .collect::<Vec<_>>();
+            .for_each(|(i, (b_k, g2_b_k))| {
+                *b_k = *g2_b_k
+                    + R_MUL_COFACTOR_GENERATOR.mul_bigint(
+                        BigInt::from(GENERATOR_EXPONENT as u8)
+                            .pow(i as u32)
+                            .to_u64_digits()
+                            .1,
+                    )
+            });
 
         let b_ks = Projective::<g2::Config>::normalize_batch(&b_ks);
 

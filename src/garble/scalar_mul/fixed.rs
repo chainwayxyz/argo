@@ -4,7 +4,7 @@ use ark_ec::{
     scalar_mul::glv::GLVConfig,
     short_weierstrass::{Affine, Projective},
 };
-use ark_ff::Field;
+use ark_ff::{Field, Zero};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::{UniformRand, rand::rngs::StdRng};
 use std::{any::type_name, ops::Mul};
@@ -154,12 +154,11 @@ where
         let (t, output_mac_key) = Self::output_mac_key_from_phis(rng, &input_mac_key, &phis);
 
         // output_mac_key.phi.endo(P) - [a]t
-        let s: Vec<Projective<C>> = output_mac_key
-            .iter()
-            .map(|key| &key.phi)
+        let mut s = [Projective::<C>::zero(); KAPPA];
+        s.iter_mut()
+            .zip(output_mac_key.iter())
             .zip(t.iter())
-            .map(|(phi, t)| phi.endo(point) - t.mul(a))
-            .collect();
+            .for_each(|((s, key), t)| *s = key.phi.endo(point) - t.mul(a));
         let s = Projective::<C>::normalize_batch(&s);
         // This unwrap cannot fail because `output_mac_key` is a fixed
         // array of `[EndoMacKey; KAPPA]`.

@@ -102,23 +102,41 @@ impl<F: Field> Poly<F> {
         self.0
             .iter()
             .map(|(monomial, coeff)| {
-                let monomial = monomial.expect("This monomial has not been initialised.");
-                let xy_value = x.pow([monomial.0 as u64]) * y.pow([monomial.1 as u64]);
-                xy_value * coeff
+                monomial.map_or_else(
+                    || F::ZERO,
+                    |monomial| {
+                        let xy_value = x.pow([monomial.0 as u64]) * y.pow([monomial.1 as u64]);
+                        xy_value * coeff
+                    },
+                )
             })
             .sum::<F>()
     }
 
-    pub(crate) fn biquadratic(coeffs: [F; 6]) -> Self {
+    pub(crate) fn biquadratic(coeffs: [Option<F>; 6]) -> Self {
         let mut poly: Poly<F> = Self::default();
-        poly.insert(Monomial::constant(), coeffs[0]);
-        poly.insert(Monomial(1, 0), coeffs[1]); // x
-        poly.insert(Monomial(0, 1), coeffs[2]); // y
-        poly.insert(Monomial(2, 0), coeffs[3]); // x^2
-        poly.insert(Monomial(1, 1), coeffs[4]); // xy
-        poly.insert(Monomial(0, 2), coeffs[5]); // y^2
+        coeffs[0].map(|coeff| poly.insert(Monomial::constant(), coeff));
+        coeffs[1].map(|coeff| poly.insert(Monomial(1, 0), coeff)); // x
+        coeffs[2].map(|coeff| poly.insert(Monomial(0, 1), coeff)); // y
+        coeffs[3].map(|coeff| poly.insert(Monomial(2, 0), coeff)); // x^2
+        coeffs[4].map(|coeff| poly.insert(Monomial(1, 1), coeff)); // xy
+        coeffs[5].map(|coeff| poly.insert(Monomial(0, 2), coeff)); // y^2
 
         poly
+    }
+
+    pub(crate) fn to_biquadratic_coeffs(&self) -> [Option<F>; 6] {
+        let mut coeffs = [None; 6];
+        coeffs
+            .iter_mut()
+            .zip(self.0.iter())
+            .for_each(|(coeff, poly)| {
+                if poly.0.is_some() {
+                    *coeff = Some(poly.1);
+                }
+            });
+
+        coeffs
     }
 
     pub(crate) fn iter(&self) -> std::slice::Iter<'_, (Option<Monomial>, F)> {
@@ -244,7 +262,8 @@ where
             .ok_or_else(|| GarbleError::AuxError(type_name::<Self::Aux>(), type_name::<Self>()))?;
 
         let mut constant = F::ZERO;
-        let mut tables = Vec::new();
+        let table_capacity = poly.0.iter().filter(|(m, _)| m.is_some()).count();
+        let mut tables = Vec::with_capacity(table_capacity);
 
         let mut terms = poly.clone();
         for idx in (0..poly.0.len()).rev() {
@@ -252,27 +271,26 @@ where
             let Some(Monomial(i, j)) = monomial else {
                 continue;
             };
-            if i > 0 {
-                let i = i - 1;
-                let (table, output_mac_key) =
-                    digit_adaptor::Table::garble(&mut nonce, rng, Some(z), &input_mac_key.x)?;
-                let r = output_mac_key.from_bits_k()?;
 
-                let monomial = Monomial(i, j);
-                terms.insert(monomial, -r);
-                tables.push((true, monomial, table));
-            } else if j > 0 {
-                let j = j - 1;
-                let (table, output_mac_key) =
-                    digit_adaptor::Table::garble(&mut nonce, rng, Some(z), &input_mac_key.y)?;
-                let r = output_mac_key.from_bits_k()?;
-
-                let monomial = Monomial(i, j);
-                terms.insert(monomial, -r);
-                tables.push((false, monomial, table));
-            } else {
+            if i == 0 && j == 0 {
                 constant = z;
+                continue;
             }
+
+            let (xy, monomial, input_mac_key) = if i > 0 {
+                (true, Monomial(i - 1, j), &input_mac_key.x)
+            } else {
+                (false, Monomial(i, j - 1), &input_mac_key.y)
+            };
+
+            let (table, output_mac_key) =
+                digit_adaptor::Table::garble(&mut nonce, rng, Some(z), input_mac_key)?;
+
+            let r = output_mac_key.from_bits_k()?;
+
+            terms.insert(monomial, -r);
+
+            tables.push((xy, monomial, table));
         }
 
         Ok((Self { constant, tables }, IdentityMacKey))
@@ -305,7 +323,7 @@ where
 }
 
 #[cfg(test)]
-fn test_biquadratic<F>(coeffs: [F; 6], mut rng: &mut StdRng)
+fn test_biquadratic<F>(coeffs: [Option<F>; 6], mut rng: &mut StdRng)
 where
     F: Field + NumBits + FromBits<bool, F> + Random + ToBits + FromBits<F, F>,
     F::BasePrimeField: FromLeBytesModOrder,
@@ -347,10 +365,14 @@ where
     const SEED: u64 = 0;
     let mut rng = StdRng::seed_from_u64(SEED);
 
-    let mut coeffs = [F::ZERO; 6];
-    coeffs
-        .iter_mut()
-        .for_each(|coeff| *coeff = F::random(&mut rng));
+    let mut coeffs = [None; 6];
+    coeffs.iter_mut().for_each(|coeff| {
+        use ark_std::rand::Rng;
+
+        if rng.gen_bool(0.5) {
+            *coeff = Some(F::random(&mut rng))
+        }
+    });
     test_biquadratic::<F>(coeffs, &mut rng);
 }
 

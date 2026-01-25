@@ -175,8 +175,14 @@ impl<G: GLVConfig> EndoScalar<G> {
     pub(crate) fn endo_biquadratic_poly(&self, poly: Poly<G::BaseField>) -> Poly<G::BaseField> {
         match self {
             Self::NegInf(_) => {
-                let mut coeffs = [G::BaseField::ZERO; 6];
-                coeffs[0] = poly.leading_coeff();
+                let mut coeffs: [Option<G::BaseField>; 6] = poly.to_biquadratic_coeffs();
+                coeffs.iter_mut().for_each(|coeff| {
+                    if let Some(_) = coeff {
+                        *coeff = Some(G::BaseField::ZERO);
+                    }
+                });
+
+                coeffs[0] = Some(poly.leading_coeff());
                 Poly::biquadratic(coeffs)
             }
             _ => {
@@ -188,11 +194,13 @@ impl<G: GLVConfig> EndoScalar<G> {
                 };
 
                 // [1, a, b, a^2, a b, b^2]
-                let mut coeffs = [G::BaseField::ONE, a, b, a.square(), a * b, b.square()];
+                let mut coeffs = [None; 6];
+                let scalars = [G::BaseField::ONE, a, b, a.square(), a * b, b.square()];
                 coeffs
                     .iter_mut()
+                    .zip(scalars.iter())
                     .zip(poly.iter())
-                    .for_each(|(coeff, poly)| *coeff *= poly.1);
+                    .for_each(|((coeff, scalar), poly)| *coeff = Some(*scalar * poly.1));
 
                 Poly::biquadratic(coeffs)
             }

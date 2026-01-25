@@ -45,6 +45,7 @@ where
 {
     type Aux = F;
 
+    #[inline(never)]
     fn garble(
         parent_nonce: &mut Nonce,
         rng: &mut StdRng,
@@ -53,8 +54,8 @@ where
     ) -> Result<(Self, OutputMacKey<F>), GarbleError> {
         let mut nonce = parent_nonce.fork();
 
-        let mut bit_adaptor_tables = Vec::with_capacity(F::num_bits() as usize);
-        let mut output_mac_keys = Vec::with_capacity(F::num_bits() as usize);
+        let mut bit_adaptor_tables = Vec::with_capacity(F::NUM_BITS);
+        let mut output_mac_keys = Vec::with_capacity(F::NUM_BITS);
 
         for input_key in input_mac_key.iter() {
             let (table, output_mac_key) =
@@ -75,11 +76,11 @@ where
         let mut nonce = parent_nonce.fork();
 
         let input_bits = input.to_bits();
-        let mut bit_group_macs = Vec::with_capacity(F::num_bits() as usize);
+        let mut bit_group_macs = Vec::with_capacity(F::NUM_BITS);
 
         for ((input, input_mac), table) in input_bits
             .iter()
-            .take(F::num_bits() as usize)
+            .take(F::NUM_BITS)
             .zip(input_mac.iter())
             .zip(self.0.iter())
         {

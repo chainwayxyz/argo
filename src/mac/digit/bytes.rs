@@ -43,7 +43,7 @@ where
     G::Scalar: ToBits + NumBits + FromBits<G::Scalar, G::Scalar>,
 {
     fn encode(&self, value: &G::Scalar) -> DigitMac<G> {
-        let mut macs = Vec::with_capacity(G::Scalar::num_bits() as usize);
+        let mut macs = Vec::with_capacity(G::Scalar::NUM_BITS);
         value
             .to_bits()
             .iter()
@@ -64,8 +64,8 @@ where
     }
 
     fn random_key(rng: &mut StdRng) -> Self {
-        let mut bit_mac_keys = Vec::with_capacity(G::Scalar::num_bits() as usize);
-        for _ in 0..G::Scalar::num_bits() {
+        let mut bit_mac_keys = Vec::with_capacity(G::Scalar::NUM_BITS);
+        for _ in 0..G::Scalar::NUM_BITS {
             bit_mac_keys.push(Bit16ByteMacKey::random_key(rng));
         }
         bit_mac_keys.into()

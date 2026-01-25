@@ -50,10 +50,10 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
                 input_mac_key.iter().map(|key| key.phi.clone()),
             );
 
-        let r_ks: Vec<_> = input_mac_key
+        let mut r_ks = Vec::with_capacity(KAPPA_B);
+        input_mac_key
             .iter()
-            .map(|key| key.k.mul_bigint(Fr::MODULUS))
-            .collect();
+            .for_each(|key| r_ks.push(key.k.mul_bigint(Fr::MODULUS)));
         let r_ks = Projective::<g2::Config>::normalize_batch(&r_ks);
 
         let table = Self {

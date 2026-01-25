@@ -119,6 +119,12 @@ impl Circuit<bool, Bit16ByteMac, bool, Bit16ByteMac> for Table<AesCtr, Bit16Byte
             &msg,
         )?;
 
+        #[cfg(test)]
+        // Check that each ciphertext is unique.
+        assert!(
+            super::super::CIPHERTEXT_SET.with(|set| set.borrow_mut().insert(ciphertext.to_vec()))
+        );
+
         Ok((
             Self {
                 gid: None,
@@ -163,7 +169,7 @@ fn test_aes_ctr_bytes_to_bytes_adaptor() {
 
     use crate::{
         mac::{Mac, MacKey, Random},
-        utils::aes_hash::aes_ctr::clear_set,
+        utils::aes_hash::aes_ctr::clear_set as aes_ctr_clear_set,
     };
 
     const N: usize = 100;
@@ -182,7 +188,8 @@ fn test_aes_ctr_bytes_to_bytes_adaptor() {
             &input_mac_key,
         )
         .unwrap();
-        clear_set();
+        aes_ctr_clear_set();
+        super::super::clear_set();
 
         let input = Bit16ByteMac::random_input(&mut rng);
         let input_mac = input_mac_key.encode(&input);
@@ -194,7 +201,8 @@ fn test_aes_ctr_bytes_to_bytes_adaptor() {
             .evaluate(&mut Nonce::new(), &input, &input_mac)
             .unwrap()
             .1;
-        clear_set();
+        aes_ctr_clear_set();
+        super::super::clear_set();
 
         assert!(output_mac == evaluated_output_mac);
     }

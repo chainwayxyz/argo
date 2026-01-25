@@ -45,9 +45,9 @@ where
     <C::BaseField as Field>::BasePrimeField: FromLeBytesModOrder,
 {
     is_full: bool,
-    x: Vec<bivariate::Table<C::BaseField>>,
-    y: Option<Vec<bivariate::Table<C::BaseField>>>,
-    z: Vec<bivariate::Table<C::BaseField>>,
+    pub(crate) x: Vec<bivariate::Table<C::BaseField>>,
+    pub(crate) y: Option<Vec<bivariate::Table<C::BaseField>>>,
+    pub(crate) z: Vec<bivariate::Table<C::BaseField>>,
 }
 
 impl<Config, F, const KAPPA: usize>
@@ -89,17 +89,17 @@ where
             // f(X, Y) = phi * (X, Y) + K = (a X, b Y) + K
             let mut cs = {
                 //  (6, 1)                 # c0
-                let c0 = B.double();
+                let c0 = Some(B.double());
                 //  (xQ_^2, xP_)           # c1
-                let c1 = x.square();
+                let c1 = Some(x.square());
                 //  (-2*yQ_, yP_)          # c2
-                let c2 = -y.double();
+                let c2 = Some(-y.double());
                 //  (xQ_, xP_^2)           # c3
-                let c3 = x;
+                let c3 = Some(x);
                 //  (0, xP_ * yP_)         # c4 = 0
-                let c4 = F::ZERO;
+                let c4 = None;
                 //  (0, yP_^2)             # c5 = 0
-                let c5 = F::ZERO;
+                let c5 = None;
 
                 Poly::biquadratic([c0, c1, c2, c3, c4, c5])
             };
@@ -124,17 +124,17 @@ where
 
             let mut cs = {
                 //  (9*yQ_, 1)                  # c0
-                let c0 = F::from(3) * B * y;
+                let c0 = Some(F::from(3) * B * y);
                 //  (0,   xP_),                 # c1 = 0
-                let c1 = F::ZERO;
+                let c1 = None;
                 //  (-(yQ_^2 + 9), yP_)         # c2
-                let c2 = -(y.square() + F::from(3) * B);
+                let c2 = Some(-(y.square() + F::from(3) * B));
                 //  (3 * xQ_ * yQ_, xP_^2),     # c3
-                let c3 = F::from(3) * x * y;
+                let c3 = Some(F::from(3) * x * y);
                 //  (-3 * xQ_^2, xP_ * yP_)     # c4
-                let c4 = -F::from(3) * x.square();
+                let c4 = Some(-F::from(3) * x.square());
                 //  (yQ_, yP_^2),               # c5
-                let c5 = y;
+                let c5 = Some(y);
 
                 Poly::biquadratic([c0, c1, c2, c3, c4, c5])
             };
@@ -158,13 +158,13 @@ where
 
             let mut cs = {
                 //  (-xQ_,      1)]       # c0
-                let c0 = -x;
+                let c0 = Some(-x);
                 //  (1, xP_)              # c1
-                let c1 = F::ONE;
-                let c2 = F::ZERO;
-                let c3 = F::ZERO;
-                let c4 = F::ZERO;
-                let c5 = F::ZERO;
+                let c1 = Some(F::ONE);
+                let c2 = None;
+                let c3 = None;
+                let c4 = None;
+                let c5 = None;
 
                 Poly::biquadratic([c0, c1, c2, c3, c4, c5])
             };
@@ -197,6 +197,7 @@ where
             if is_full {
                 // Scale y coordinate by a^3
                 let a3 = a2 * a;
+
                 let y_table = bivariate::Table::garble(
                     &mut nonce,
                     rng,
@@ -228,7 +229,11 @@ where
         let mut nonce = parent_nonce.fork();
 
         let mut xs = Vec::with_capacity(self.x.len());
-        let mut ys = Vec::with_capacity(self.x.len());
+        let mut ys = if self.is_full {
+            Vec::with_capacity(self.x.len())
+        } else {
+            vec![]
+        };
         let mut zs = Vec::with_capacity(self.z.len());
 
         let y = if self.is_full {
@@ -295,7 +300,10 @@ where
     <C::BaseField as Field>::BasePrimeField: FromLeBytesModOrder,
     EndoMacKey<C>: RandomFromPhi<Affine<C>, EndoMac<C>>,
 {
-    use crate::{mac::MacKey, utils::aes_hash::aes_ctr::clear_set};
+    use crate::{
+        garble::bit_adaptor::clear_set as bit_adaptor_clear_set, mac::MacKey,
+        utils::aes_hash::aes_ctr::clear_set as aes_ctr_clear_set,
+    };
     use ark_std::{UniformRand, rand::SeedableRng};
 
     let mut rng = StdRng::seed_from_u64(seed);
@@ -319,13 +327,15 @@ where
     )
     .unwrap()
     .0;
-    clear_set();
+    aes_ctr_clear_set();
+    bit_adaptor_clear_set();
 
     let evaluated_output = garbling_table
         .evaluate(&mut Nonce::new(), &input, &input_mac)
         .unwrap()
         .1;
-    clear_set();
+    aes_ctr_clear_set();
+    bit_adaptor_clear_set();
 
     for (expected, evaluated) in output_mac.iter().zip(evaluated_output.iter()) {
         if **expected != **evaluated {

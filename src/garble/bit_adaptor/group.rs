@@ -86,6 +86,10 @@ where
         let msg = output_mac_key.encode(&true);
         let ciphertext = key.encrypt(None, &mut nonce, &msg)?;
 
+        #[cfg(test)]
+        // Check that each ciphertext is unique.
+        assert!(super::CIPHERTEXT_SET.with(|set| set.borrow_mut().insert(ciphertext.to_vec())));
+
         Ok((
             Self {
                 gid: None,
@@ -120,8 +124,6 @@ where
     }
 }
 
-/// Encrypt a BitGroupMac(G) using a Bit16ByteMac([u8; 16]) as the key.
-/// Produces a ciphertext Vec<u8> of the same length as G::NUM_BYTES.
 impl<G> Encrypt<AesCtr, BitGroupMac<G>> for Bit16ByteMac
 where
     G: Field,
@@ -129,6 +131,13 @@ where
 {
     type Ciphertext = Vec<u8>;
 
+    /// Encrypts a BitGroupMac(G) using a Bit16ByteMac([u8; 16]) as the key.
+    /// Produces a ciphertext Vec<u8> of the same length as the number of
+    /// bytes in `G`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if AesCtr::num_blocks::<G>() > 32.
     fn encrypt(
         &self,
         _dst: Option<&[u8]>,
@@ -136,14 +145,11 @@ where
         message: &BitGroupMac<G>,
     ) -> Result<Self::Ciphertext, GarbleError> {
         let num_blocks = AesCtr::num_blocks::<G>();
-        let total_bytes = num_blocks * AES_BLOCK_SIZE;
-
-        // Single allocation with exact size
-        let mut ciphertext = vec![0u8; total_bytes];
+        let mut ciphertext = vec![0u8; num_blocks * AES_BLOCK_SIZE];
 
         let aes = AesCtr::get_instance(self);
 
-        // Generate keystream directly into buffer
+        // Generate keystream
         for i in 0..num_blocks {
             let nonce = parent_nonce.fork();
             let mut block = Block::from(nonce.bytes());
@@ -153,17 +159,17 @@ where
             ciphertext[start..start + AES_BLOCK_SIZE].copy_from_slice(&block);
         }
 
-        // XOR message bytes directly without intermediate allocation
+        // XOR message
         let mut offset = 0;
         for elem in message.to_base_prime_field_elements() {
             let bytes = elem.into_bigint().to_bytes_le();
-            let end = (offset + bytes.len()).min(ciphertext.len());
+            let len = bytes.len().min(ciphertext.len() - offset);
 
-            for i in offset..end {
-                ciphertext[i] ^= bytes[i - offset];
+            for i in 0..len {
+                ciphertext[offset + i] ^= bytes[i];
             }
 
-            offset = end;
+            offset += len;
             if offset >= ciphertext.len() {
                 break;
             }
@@ -171,6 +177,7 @@ where
 
         Ok(ciphertext)
     }
+
     fn decrypt(
         &self,
         _dst: Option<&[u8]>,
@@ -219,7 +226,7 @@ where
 
     use crate::{
         mac::{Mac, MacKey},
-        utils::aes_hash::aes_ctr::clear_set,
+        utils::aes_hash::aes_ctr::clear_set as aes_ctr_clear_set,
     };
 
     const N: usize = 100;
@@ -239,7 +246,8 @@ where
                 &input_mac_key,
             )
             .unwrap();
-        clear_set();
+        aes_ctr_clear_set();
+        super::clear_set();
 
         let input = Bit16ByteMac::random_input(&mut rng);
         let input_mac = input_mac_key.encode(&input);
@@ -251,7 +259,8 @@ where
             .evaluate(&mut Nonce::new(), &input, &input_mac)
             .unwrap()
             .1;
-        clear_set();
+        aes_ctr_clear_set();
+        super::clear_set();
 
         assert!(output_mac == evaluated_output_mac);
     }

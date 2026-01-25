@@ -90,7 +90,7 @@ where
                 .map(|input_mac_key| {
                     bit_adaptor::Table::garble(&mut nonce, rng, Some(phi), input_mac_key)
                 })
-                .collect::<Result<Vec<_>, _>>()? // Collect Result first
+                .collect::<Result<Vec<_>, _>>()?
                 .into_iter()
                 .unzip()
         };
@@ -191,7 +191,7 @@ where
     F: PrimeField + FromBits<F, F> + Random + ToBits + NumBits,
 {
     use crate::{
-        garble::Nonce,
+        garble::{Nonce, bit_adaptor::clear_set as bit_adaptor_clear_set},
         mac::digit::DigitMacKey,
         utils::aes_hash::{
             aes_ctr::clear_set as aes_ctr_clear_set, aes_mitccr::clear_set as aes_mitccr_clear_set,
@@ -217,6 +217,7 @@ where
     .0;
     aes_ctr_clear_set();
     aes_mitccr_clear_set();
+    bit_adaptor_clear_set();
 
     let output = table
         .evaluate(&mut Nonce::new(), input, &input_mac)
@@ -224,6 +225,7 @@ where
         .0;
     aes_ctr_clear_set();
     aes_mitccr_clear_set();
+    bit_adaptor_clear_set();
 
     output
 }

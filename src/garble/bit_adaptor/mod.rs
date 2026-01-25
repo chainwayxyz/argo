@@ -6,6 +6,8 @@ pub(crate) mod bytes;
 pub(crate) mod group;
 
 use std::fmt::Debug;
+#[cfg(test)]
+use std::{cell::RefCell, collections::BTreeSet};
 
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 
@@ -41,4 +43,18 @@ where
         parent_nonce: &Nonce,
         phi: &Self::Phi,
     ) -> Result<OutputMac::Key, GarbleError>;
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Ciphertexts used in bit adaptor tables.
+    pub(crate) static CIPHERTEXT_SET: RefCell<BTreeSet<Vec<u8>>> = const { RefCell::new(BTreeSet::new()) }
+}
+
+#[cfg(test)]
+/// Clear the set
+pub(crate) fn clear_set() {
+    CIPHERTEXT_SET.with(|set| {
+        set.borrow_mut().clear();
+    });
 }

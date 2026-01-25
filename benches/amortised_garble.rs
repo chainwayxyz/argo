@@ -7,7 +7,11 @@ use ark_ec::{AffineRepr, pairing::Pairing};
 use ark_ff::UniformRand;
 use ark_std::rand::{SeedableRng, rngs::StdRng};
 use criterion::{Criterion, criterion_group, criterion_main};
+use mimalloc::MiMalloc;
 use rayon::{iter::ParallelIterator, slice::ParallelSlice};
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 fn amortised_garble(c: &mut Criterion) {
     const N: u64 = 400;

@@ -104,11 +104,11 @@ impl Table {
 
         let mut b_range_check = Vec::with_capacity(4);
         {
-            let x0_bits = input_mac_key.B.x[..Fq::num_bits() as usize].to_vec().into();
-            let x1_bits = input_mac_key.B.x[Fq::num_bits() as usize..].to_vec().into();
+            let x0_bits = input_mac_key.B.x[..Fq::NUM_BITS].to_vec().into();
+            let x1_bits = input_mac_key.B.x[Fq::NUM_BITS..].to_vec().into();
 
-            let y0_bits = input_mac_key.B.y[..Fq::num_bits() as usize].to_vec().into();
-            let y1_bits = input_mac_key.B.y[Fq::num_bits() as usize..].to_vec().into();
+            let y0_bits = input_mac_key.B.y[..Fq::NUM_BITS].to_vec().into();
+            let y1_bits = input_mac_key.B.y[Fq::NUM_BITS..].to_vec().into();
 
             for input_mac_key in [x0_bits, x1_bits, y0_bits, y1_bits].iter() {
                 let table = less_than::Table::<Fq>::garble(
@@ -245,10 +245,10 @@ impl Table {
         // Checks that B.x, B.y are valid Fq elements, returning the `secret`
         // otherwise.
         {
-            let x0_mac = input_mac.B.x[..Fq::num_bits() as usize].to_vec().into();
-            let x1_mac = input_mac.B.x[Fq::num_bits() as usize..].to_vec().into();
-            let y0_mac = input_mac.B.y[..Fq::num_bits() as usize].to_vec().into();
-            let y1_mac = input_mac.B.y[Fq::num_bits() as usize..].to_vec().into();
+            let x0_mac = input_mac.B.x[..Fq::NUM_BITS].to_vec().into();
+            let x1_mac = input_mac.B.x[Fq::NUM_BITS..].to_vec().into();
+            let y0_mac = input_mac.B.y[..Fq::NUM_BITS].to_vec().into();
+            let y1_mac = input_mac.B.y[Fq::NUM_BITS..].to_vec().into();
 
             let inputs = [input.B.x.c0, input.B.x.c1, input.B.y.c0, input.B.y.c1];
             let input_macs = [x0_mac, x1_mac, y0_mac, y1_mac];

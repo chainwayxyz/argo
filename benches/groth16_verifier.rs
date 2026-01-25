@@ -10,6 +10,10 @@ use ark_ec::{AffineRepr, pairing::Pairing};
 use ark_ff::UniformRand;
 use ark_std::rand::{SeedableRng, rngs::StdRng};
 use criterion::{Criterion, criterion_group, criterion_main};
+use mimalloc::MiMalloc;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 fn invalid_snark(c: &mut Criterion) {
     const SEED: u64 = 0;
@@ -37,8 +41,9 @@ fn invalid_snark(c: &mut Criterion) {
     let mut garble_group = c.benchmark_group("groth16-garble");
     garble_group.sample_size(100);
     garble_group.bench_function("garble", |b| {
+        let mut res = None;
         b.iter(|| {
-            garble_groth16(SEED, secret, verifier_key, &input_mac_key, gid).unwrap();
+            res = Some(garble_groth16(SEED, secret, verifier_key, &input_mac_key, gid).unwrap());
         })
     });
     garble_group.finish();

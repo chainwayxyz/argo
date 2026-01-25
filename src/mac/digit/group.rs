@@ -51,6 +51,7 @@ impl<G> DigitMacKey<G>
 where
     G: FromBits<G, G> + AdditiveGroup + Random,
 {
+    #[inline(always)]
     pub(crate) fn from_bits_k(&self) -> Result<G, GarbleError> {
         let ks = self.iter().map(|key| key.k);
         G::from_bits(ks).ok_or_else(|| GarbleError::DigitMacKeyReconstructionError)
@@ -74,8 +75,8 @@ where
     type Phi = G;
 
     fn random_from_phi(rng: &mut StdRng, phi: &Self::Phi) -> Self {
-        let mut keys = Vec::with_capacity(G::Scalar::num_bits() as usize);
-        for _ in 0..G::Scalar::num_bits() {
+        let mut keys = Vec::with_capacity(G::Scalar::NUM_BITS);
+        for _ in 0..G::Scalar::NUM_BITS {
             keys.push(<GroupMacKey<G> as RandomFromPhi<bool, _>>::random_from_phi(
                 rng, phi,
             ));
@@ -90,7 +91,7 @@ where
     G::Scalar: ToBits + NumBits + FromBits<G::Scalar, G::Scalar>,
 {
     fn encode(&self, value: &G::Scalar) -> DigitMac<G> {
-        let mut macs = Vec::with_capacity(G::Scalar::num_bits() as usize);
+        let mut macs = Vec::with_capacity(G::Scalar::NUM_BITS);
         value
             .to_bits()
             .iter()
