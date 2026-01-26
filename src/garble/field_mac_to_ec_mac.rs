@@ -24,7 +24,7 @@ use crate::{
     },
     mac::{
         Random, RandomFromPhi,
-        endo::{EndoMac, EndoMacKey, IteratedEndoMac},
+        endo::{EndoMac, EndoMacKey, IteratedEndoMac, PSqModR},
     },
     utils::{
         bits::{FromBits, NumBits, ToBits},
@@ -57,6 +57,7 @@ where
     Config: GLVConfig<BaseField = F> + Clone,
     F: Field + NumBits + ToBits + FromBits<F, F> + FromBits<bool, F> + Random,
     F::BasePrimeField: FromLeBytesModOrder,
+    Config: PSqModR,
     EndoMacKey<Config>: RandomFromPhi<Affine<Config>, EndoMac<Config>>,
 {
     type Aux = (bool, OutputMacKey<Config, KAPPA>);
@@ -79,6 +80,7 @@ where
         fn x_aux<C, F>(mac_key: &EndoMacKey<C>, a2: F) -> Result<Poly<F>, GarbleError>
         where
             C: GLVConfig<BaseField = F>,
+            C: PSqModR,
             F: Field,
         {
             let B = C::COEFF_B;
@@ -114,6 +116,7 @@ where
         fn y_aux<C, F>(mac_key: &EndoMacKey<C>, a3: F) -> Result<Poly<F>, GarbleError>
         where
             C: GLVConfig<BaseField = F>,
+            C: PSqModR,
             F: Field,
         {
             let B = C::COEFF_B;
@@ -149,6 +152,7 @@ where
         fn z_aux<C, F>(mac_key: &EndoMacKey<C>, a: F) -> Result<Poly<F>, GarbleError>
         where
             C: GLVConfig<BaseField = F>,
+            C: PSqModR,
             F: Field,
         {
             let x = mac_key
@@ -291,6 +295,7 @@ where
 fn test_field_mac_to_ec_mac<C, const KAPPA: usize>(is_full: bool, seed: u64)
 where
     C: GLVConfig + Clone,
+    C: PSqModR,
     C::BaseField: Field
         + NumBits
         + FromBits<bool, C::BaseField>
@@ -370,6 +375,7 @@ fn test_field_mac_to_ec_mac_g2() {
 fn test_serde_roundtrip<C, const KAPPA: usize>(name: &str, is_full: bool)
 where
     C: GLVConfig + Clone,
+    C: PSqModR,
     C::BaseField: Field<BasePrimeField = Fq>
         + NumBits
         + FromBits<bool, C::BaseField>

@@ -15,7 +15,7 @@ use crate::{
         IteratedMac, Random, RandomFromPhi,
         bit::{bytes::Bit16ByteMac, group::BitGroupMac},
         digit::{bytes, group},
-        endo::{EndoMac, EndoMacKey, EndoScalar},
+        endo::{EndoMac, EndoMacKey, EndoScalar, PSqModR},
         group::GroupMacKey,
     },
     utils::{
@@ -109,7 +109,7 @@ where
 impl<C, const KAPPA: usize> Circuit<Input<C>, InputMac<C>, Output<C>, OutputMac<C, KAPPA>>
     for Table<C, KAPPA>
 where
-    C: GLVConfig + Clone,
+    C: GLVConfig + Clone + PSqModR,
     C::ScalarField: Random + FromBits<C::ScalarField, C::ScalarField> + ToBits + NumBits,
     <C::ScalarField as Field>::BasePrimeField: FromLeBytesModOrder,
     EndoMacKey<C>: RandomFromPhi<Affine<C>, EndoMac<C>>,

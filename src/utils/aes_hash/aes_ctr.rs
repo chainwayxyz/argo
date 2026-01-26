@@ -41,7 +41,7 @@ impl AesCtr {
 }
 
 impl Hash for AesCtr {
-    #[inline(always)]
+    #[inline]
     fn hash(key: &[u8; 16], msg: &[u8; 16]) -> [u8; 16] {
         let mut block = Block::from(*msg);
         Self::get_instance(key).encrypt_block(&mut block);

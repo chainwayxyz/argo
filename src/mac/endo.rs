@@ -7,7 +7,7 @@ use std::{marker::PhantomData, ops::Neg};
 
 use ark_bn254::{Fq, Fq12, Fr, g1, g2};
 use ark_ec::{
-    AdditiveGroup, CurveGroup, PrimeGroup,
+    AdditiveGroup, CurveConfig, CurveGroup, PrimeGroup,
     scalar_mul::glv::GLVConfig,
     short_weierstrass::{Affine, Projective},
 };
@@ -15,6 +15,7 @@ use ark_ff::{BigInt, BigInteger, CyclotomicMultSubgroup, Field, PrimeField, Unif
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::{Rng, rngs::StdRng};
 use derive_more::{Deref, From};
+use std::sync::LazyLock;
 
 use crate::{
     garble::{bivariate::Poly, groth16_verifier::KAPPA_B},
@@ -23,6 +24,22 @@ use crate::{
 };
 
 pub(crate) const ENDO_SIZE: usize = 7;
+
+pub static G1_P_SQ_MOD_R: LazyLock<<g1::Config as CurveConfig>::ScalarField> = LazyLock::new(|| {
+    let p =
+        <<<g1::Config as CurveConfig>::BaseField as Field>::BasePrimeField as PrimeField>::MODULUS;
+    let p_mod_r =
+        <g1::Config as CurveConfig>::ScalarField::from_le_bytes_mod_order(&p.to_bytes_le());
+    p_mod_r.square()
+});
+
+pub static G2_P_SQ_MOD_R: LazyLock<<g2::Config as CurveConfig>::ScalarField> = LazyLock::new(|| {
+    let p =
+        <<<g2::Config as CurveConfig>::BaseField as Field>::BasePrimeField as PrimeField>::MODULUS;
+    let p_mod_r =
+        <g2::Config as CurveConfig>::ScalarField::from_le_bytes_mod_order(&p.to_bytes_le());
+    p_mod_r.square()
+});
 
 #[derive(Clone, Copy)]
 pub enum EndoScalar<G> {
@@ -79,31 +96,31 @@ impl From<EndoScalar<g2::Config>> for EndoScalar<g1::Config> {
     }
 }
 
-impl<G: GLVConfig> EndoScalar<G> {
-    pub(crate) fn iter() -> Vec<Self> {
-        vec![
-            EndoScalar::Zero(PhantomData),
-            EndoScalar::One(PhantomData),
-            EndoScalar::Two(PhantomData),
-            EndoScalar::Three(PhantomData),
-            EndoScalar::Four(PhantomData),
-            EndoScalar::Five(PhantomData),
-            EndoScalar::NegInf(PhantomData),
-        ]
-    }
+pub trait PSqModR: GLVConfig {
+    fn p_sq_mod_r() -> Self::ScalarField;
+}
 
+impl PSqModR for g1::Config {
+    fn p_sq_mod_r() -> Self::ScalarField {
+        *G1_P_SQ_MOD_R
+    }
+}
+
+impl PSqModR for g2::Config {
+    fn p_sq_mod_r() -> Self::ScalarField {
+        *G2_P_SQ_MOD_R
+    }
+}
+
+impl<G: GLVConfig> EndoScalar<G>
+where
+    G: PSqModR,
+{
     #[inline]
     pub(crate) fn two_minus_omega() -> G::ScalarField {
         let two = G::ScalarField::ONE + G::ScalarField::ONE;
         let neg_omega = EndoScalar::One(PhantomData::<G>).as_scalar();
         two + neg_omega
-    }
-
-    #[inline]
-    fn p_sq_mod_r() -> G::ScalarField {
-        let p = <<G::BaseField as Field>::BasePrimeField as PrimeField>::MODULUS;
-        let p_mod_r = G::ScalarField::from_le_bytes_mod_order(&p.to_bytes_le());
-        p_mod_r.square()
     }
 
     #[inline]
@@ -114,7 +131,7 @@ impl<G: GLVConfig> EndoScalar<G> {
         // So, if you fix ENDO_COEFFS you get different LAMBDA (as BN254 does)
         // This reverses that and has the effect of fixing the endomorphism to
         // be multiplication by p^2.
-        if -G::LAMBDA == Self::p_sq_mod_r() {
+        if -G::LAMBDA == G::p_sq_mod_r() {
             -G::LAMBDA
         } else {
             -(G::LAMBDA.square())
@@ -123,35 +140,10 @@ impl<G: GLVConfig> EndoScalar<G> {
 
     #[inline]
     pub(crate) fn omega_base() -> G::BaseField {
-        if -G::LAMBDA == Self::p_sq_mod_r() {
+        if -G::LAMBDA == G::p_sq_mod_r() {
             -G::ENDO_COEFFS[0]
         } else {
             -(G::ENDO_COEFFS[0].square())
-        }
-    }
-
-    fn from_u8(value: u8) -> Self {
-        match value {
-            0 => Self::Zero(PhantomData),
-            1 => Self::One(PhantomData),
-            2 => Self::Two(PhantomData),
-            3 => Self::Three(PhantomData),
-            4 => Self::Four(PhantomData),
-            5 => Self::Five(PhantomData),
-            6 => Self::NegInf(PhantomData),
-            _ => panic!(),
-        }
-    }
-
-    fn as_u8(&self) -> u8 {
-        match self {
-            EndoScalar::Zero(_) => 0,
-            EndoScalar::One(_) => 1,
-            EndoScalar::Two(_) => 2,
-            EndoScalar::Three(_) => 3,
-            EndoScalar::Four(_) => 4,
-            EndoScalar::Five(_) => 5,
-            EndoScalar::NegInf(_) => 6,
         }
     }
 
@@ -223,6 +215,45 @@ impl<G: GLVConfig> EndoScalar<G> {
                     infinity: point.infinity,
                 }
             }
+        }
+    }
+}
+
+impl<G: GLVConfig> EndoScalar<G> {
+    pub(crate) fn iter() -> Vec<Self> {
+        vec![
+            EndoScalar::Zero(PhantomData),
+            EndoScalar::One(PhantomData),
+            EndoScalar::Two(PhantomData),
+            EndoScalar::Three(PhantomData),
+            EndoScalar::Four(PhantomData),
+            EndoScalar::Five(PhantomData),
+            EndoScalar::NegInf(PhantomData),
+        ]
+    }
+
+    fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::Zero(PhantomData),
+            1 => Self::One(PhantomData),
+            2 => Self::Two(PhantomData),
+            3 => Self::Three(PhantomData),
+            4 => Self::Four(PhantomData),
+            5 => Self::Five(PhantomData),
+            6 => Self::NegInf(PhantomData),
+            _ => panic!(),
+        }
+    }
+
+    fn as_u8(&self) -> u8 {
+        match self {
+            EndoScalar::Zero(_) => 0,
+            EndoScalar::One(_) => 1,
+            EndoScalar::Two(_) => 2,
+            EndoScalar::Three(_) => 3,
+            EndoScalar::Four(_) => 4,
+            EndoScalar::Five(_) => 5,
+            EndoScalar::NegInf(_) => 6,
         }
     }
 
@@ -372,6 +403,7 @@ impl RandomFromPhi<Affine<g2::Config>, EndoMac<g2::Config>> for EndoMacKey<g2::C
 impl<G> MacKey<Affine<G>, EndoMac<G>> for EndoMacKey<G>
 where
     G: GLVConfig + Clone,
+    G: PSqModR,
     Self: RandomFromPhi<Affine<G>, EndoMac<G>, Phi = EndoScalar<G>>,
 {
     fn encode(&self, value: &Affine<G>) -> EndoMac<G> {

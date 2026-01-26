@@ -1,22 +1,23 @@
+use std::sync::LazyLock;
+
 use ark_bn254::{Fq, Fq2, Fr, g2};
 use ark_ec::{AffineRepr, short_weierstrass::Affine};
 use ark_ff::{BigInt, BigInteger, PrimeField};
 use ark_std::rand::rngs::StdRng;
-use lazy_static::lazy_static;
 
 use crate::utils::bits::ToBits;
 
-lazy_static! {
-    /// A 17-byte offset in Bn254::Fq, i.e. Fq(2^{8 * 17})
-    /// Used in optimised from_le_bytes_mod_order for hash_to_field
-    /// This unwrap cannot fail as the value is smaller than the field modulus.
-    pub static ref FQ_LO_BYTES_OFFSET: Fq = Fq::from_bigint(BigInt::one() << (8 * 17)).unwrap();
+/// A 17-byte offset in Bn254::Fq, i.e. Fq(2^{8 * 17})
+/// Used in optimised from_le_bytes_mod_order for hash_to_field
+/// This unwrap cannot fail as the value is smaller than the field modulus.
+pub static FQ_LO_BYTES_OFFSET: LazyLock<Fq> =
+    LazyLock::new(|| Fq::from_bigint(BigInt::one() << (8 * 17)).unwrap());
 
-    /// A 17-byte offset in Bn254::Fr, i.e. Fr(2^{8 * 17})
-    /// Used in optimised from_le_bytes_mod_order for hash_to_field
-    /// This unwrap cannot fail as the value is smaller than the field modulus.
-    pub static ref FR_LO_BYTES_OFFSET: Fr = Fr::from_bigint(BigInt::one() << (8 * 17)).unwrap();
-}
+/// A 17-byte offset in Bn254::Fr, i.e. Fr(2^{8 * 17})
+/// Used in optimised from_le_bytes_mod_order for hash_to_field
+/// This unwrap cannot fail as the value is smaller than the field modulus.
+pub static FR_LO_BYTES_OFFSET: LazyLock<Fr> =
+    LazyLock::new(|| Fr::from_bigint(BigInt::one() << (8 * 17)).unwrap());
 
 fn to_u64_array<const N: usize>(bytes: &[u8]) -> [u64; N] {
     let mut result = [0u64; N];
@@ -45,7 +46,7 @@ pub trait FromLeBytesModOrder {
 
 impl FromLeBytesModOrder for Fq {
     /// Optimized implementation of from_le_bytes_mod_order for Bn254::Fq
-    #[inline(always)]
+    #[inline]
     fn from_le_bytes_mod_order(bytes: &[u8]) -> Fq {
         let num_modulus_bytes = Fq::MODULUS_BIT_SIZE.div_ceil(8) as usize;
         let num_bytes_to_directly_convert = ark_std::cmp::min(num_modulus_bytes - 1, bytes.len());
@@ -77,7 +78,8 @@ impl FromLeBytesModOrder for Fq {
 
 impl FromLeBytesModOrder for Fr {
     /// Optimized implementation of from_le_bytes_mod_order for Bn254::Fr
-    #[inline(always)]
+    /// FIXME test more cases?!
+    #[inline]
     fn from_le_bytes_mod_order(bytes: &[u8]) -> Fr {
         let num_modulus_bytes = Fr::MODULUS_BIT_SIZE.div_ceil(8) as usize;
         let num_bytes_to_directly_convert = ark_std::cmp::min(num_modulus_bytes - 1, bytes.len());

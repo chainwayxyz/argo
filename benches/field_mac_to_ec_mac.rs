@@ -7,7 +7,7 @@ use argo::{
     },
     mac::{
         MacKey, Random, RandomFromPhi,
-        endo::{EndoMac, EndoMacKey},
+        endo::{EndoMac, EndoMacKey, PSqModR},
     },
     utils::{
         bits::{FromBits, NumBits, ToBits},
@@ -22,7 +22,7 @@ use criterion::{Criterion, criterion_group, criterion_main};
 
 fn field_mac_to_ec_mac<Config, const KAPPA: usize>(is_full: bool, c: &mut Criterion)
 where
-    Config: GLVConfig + Clone,
+    Config: GLVConfig + Clone + PSqModR,
     Config::BaseField: Field<BasePrimeField = Fq>
         + NumBits
         + ToBits

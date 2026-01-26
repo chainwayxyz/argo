@@ -1,13 +1,14 @@
 use ark_bn254::{Fq, Fq2, Fr};
 use ark_ff::{AdditiveGroup, BigInteger, Field, PrimeField};
-use lazy_static::lazy_static;
-use std::ops::{Add, Mul, MulAssign};
+use std::{
+    ops::{Add, Mul, MulAssign},
+    sync::LazyLock,
+};
 
-lazy_static! {
-    /// Fq2 {c0: 0, c1: 1}.
-    /// This unwrap cannot fail as this is a valid Fq2 element.
-    static ref ALPHA: Fq2 = Fq2::from_base_prime_field_elems([Fq::ZERO, Fq::ONE]).unwrap();
-}
+/// Fq2 {c0: 0, c1: 1}.
+/// This unwrap cannot fail as this is a valid Fq2 element.
+static ALPHA: LazyLock<Fq2> =
+    LazyLock::new(|| Fq2::from_base_prime_field_elems([Fq::ZERO, Fq::ONE]).unwrap());
 
 pub trait FromBits<B, V> {
     /// Takes a bit representation where each bit is encoded as a value in `B`,

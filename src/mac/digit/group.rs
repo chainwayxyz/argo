@@ -51,7 +51,7 @@ impl<G> DigitMacKey<G>
 where
     G: FromBits<G, G> + AdditiveGroup + Random,
 {
-    #[inline(always)]
+    #[inline]
     pub(crate) fn from_bits_k(&self) -> Result<G, GarbleError> {
         let ks = self.iter().map(|key| key.k);
         G::from_bits(ks).ok_or(GarbleError::DigitMacKeyReconstructionError)

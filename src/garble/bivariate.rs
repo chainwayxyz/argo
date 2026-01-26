@@ -31,7 +31,7 @@ pub(crate) struct Monomial(u8, u8);
 
 impl Monomial {
     /// Weight of a monomial.
-    #[inline(always)]
+    #[inline]
     fn weight(&self) -> usize {
         // The diagonal
         let k = self.0 + self.1;
@@ -39,12 +39,12 @@ impl Monomial {
         ((k * (k + 1) / 2) + self.1) as usize
     }
 
-    #[inline(always)]
+    #[inline]
     pub(crate) fn new(x: u8, y: u8) -> Self {
         Self(x, y)
     }
 
-    #[inline(always)]
+    #[inline]
     pub(crate) fn constant() -> Self {
         Self(0, 0)
     }
@@ -71,7 +71,7 @@ type XY = bool;
 pub(crate) struct Poly<F>(Vec<(Option<Monomial>, F)>);
 
 impl<F: Field> Poly<F> {
-    #[inline(always)]
+    #[inline]
     pub(crate) fn insert(&mut self, monomial: Monomial, coeff: F) {
         if self.0.len() < monomial.weight() + 1 {
             let padding = vec![(None, F::ZERO); monomial.weight() + 1 - self.0.len()];
@@ -81,7 +81,7 @@ impl<F: Field> Poly<F> {
         self.0[monomial.weight()].1 += coeff;
     }
 
-    #[inline(always)]
+    #[inline]
     pub(crate) fn leading_coeff(&self) -> F {
         self.0
             .iter()
@@ -92,7 +92,7 @@ impl<F: Field> Poly<F> {
             .unwrap_or(F::ZERO)
     }
 
-    #[inline(always)]
+    #[inline]
     pub(crate) fn scale(&mut self, scalar: F) {
         self.0.iter_mut().for_each(|(_, coeff)| *coeff *= scalar);
     }

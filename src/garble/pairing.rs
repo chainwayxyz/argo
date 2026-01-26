@@ -1,7 +1,7 @@
 //! Given the input MACs of (A, B): (G1, G2), returns the MAC of e(A, B).
 
 use core::panic;
-use std::marker::PhantomData;
+use std::{marker::PhantomData, sync::LazyLock};
 
 use ark_bn254::{Bn254, Fq2, Fq12, Fr, G1Projective, G2Affine, G2Projective, g1, g2};
 use ark_ec::{
@@ -12,7 +12,6 @@ use ark_ec::{
 };
 use ark_ff::{AdditiveGroup, Field, PrimeField, UniformRand, Zero};
 use ark_std::rand::rngs::StdRng;
-use lazy_static::lazy_static;
 use num_bigint::BigInt;
 
 use crate::{
@@ -27,16 +26,22 @@ use crate::{
     utils::bits::pow_n_lincomb,
 };
 
-lazy_static! {
-    /// e(G, H)
-    pub static ref TARGET_GENERATOR: PairingOutput<Bn254> = Bn254::multi_pairing(
-            vec![<G1Projective as PrimeGroup>::generator()],
-            vec![G2Projective::generator()],
-        );
-    /// [r]P, where P is a point on E'/Fp2 with x-coordinate = 1
-    /// This unwrap cannot fail since this is a valid curve point.
-    pub static ref R_MUL_COFACTOR_GENERATOR: Affine<g2::Config> = (Affine::get_point_from_x_unchecked(Fq2::ONE, true).unwrap().mul_bigint(Fr::MODULUS)).into();
-}
+/// e(G, H)
+pub static TARGET_GENERATOR: LazyLock<PairingOutput<Bn254>> = LazyLock::new(|| {
+    Bn254::multi_pairing(
+        vec![<G1Projective as PrimeGroup>::generator()],
+        vec![G2Projective::generator()],
+    )
+});
+
+/// [r]P, where P is a point on E'/Fp2 with x-coordinate = 1
+/// This unwrap cannot fail since this is a valid curve point.
+pub static R_MUL_COFACTOR_GENERATOR: LazyLock<Affine<g2::Config>> = LazyLock::new(|| {
+    (Affine::get_point_from_x_unchecked(Fq2::ONE, true)
+        .unwrap()
+        .mul_bigint(Fr::MODULUS))
+    .into()
+});
 
 // This works only up to KAPPA_B = 65;
 pub(crate) const GENERATOR_EXPONENT: usize = 3;
