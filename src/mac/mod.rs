@@ -16,6 +16,7 @@ use crate::{
 
 pub(crate) mod binary;
 pub(crate) mod bit;
+pub(crate) mod ddh;
 pub(crate) mod digit;
 pub mod endo;
 pub(crate) mod group;

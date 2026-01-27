@@ -19,13 +19,16 @@ use ark_std::rand::rngs::StdRng;
 
 use crate::garble::groth16_verifier::KAPPA_B;
 use crate::garble::{Circuit, conditional_reveal};
-use crate::mac::endo::{EndoScalar, IteratedEndoMac};
+use crate::mac::endo::{Endo, EndoScalar, IteratedEndoMacG2};
 use crate::mac::{IdentityMac, IdentityMacKey};
 use crate::utils::error::{EvalError, GarbleError};
 use crate::utils::try_unwrap_single;
 
+#[cfg(test)]
+use crate::mac::endo::EndoMacKeyG2;
+
 type Input = Affine<g2::Config>;
-type InputMac = IteratedEndoMac<g2::Config, KAPPA_B>;
+type InputMac = IteratedEndoMacG2<KAPPA_B>;
 
 type Output = Fq;
 
@@ -126,11 +129,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
 
 #[test]
 fn test_g2_subgroup_check() {
-    use crate::{
-        garble::Nonce,
-        mac::{MacKey, endo::EndoMacKey},
-        utils::group::get_curve_point_not_in_g2,
-    };
+    use crate::{garble::Nonce, mac::MacKey, utils::group::get_curve_point_not_in_g2};
     use ark_std::{
         UniformRand,
         rand::{SeedableRng, rngs::StdRng},
@@ -142,7 +141,7 @@ fn test_g2_subgroup_check() {
     let secret = Fq::rand(&mut rng);
 
     let input = get_curve_point_not_in_g2(&mut rng);
-    let input_mac_key = <[EndoMacKey<g2::Config>; KAPPA_B]>::random_key(&mut rng);
+    let input_mac_key = <[EndoMacKeyG2; KAPPA_B]>::random_key(&mut rng);
     let input_mac = input_mac_key.encode(&input);
 
     let table = Table::garble(&mut Nonce::new(), &mut rng, Some(secret), &input_mac_key)
@@ -271,7 +270,7 @@ fn test_g2_subgroup_check_decoding_error() {
         B
     };
 
-    let input_mac_key: [EndoMacKey<g2::Config>; KAPPA_B] = phis
+    let input_mac_key: [EndoMacKeyG2; KAPPA_B] = phis
         .into_iter()
         .zip(r_Ks.iter())
         .map(|(phi, r_K)| {

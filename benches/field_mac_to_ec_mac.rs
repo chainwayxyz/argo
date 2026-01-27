@@ -30,7 +30,8 @@ where
         + FromBits<Config::BaseField, Config::BaseField>
         + Random,
     <Config::BaseField as Field>::BasePrimeField: FromLeBytesModOrder,
-    EndoMacKey<Config>: RandomFromPhi<Affine<Config>, EndoMac<Config>>,
+    EndoMacKey<Config, Affine<Config>>:
+        RandomFromPhi<Affine<Config>, EndoMac<Config, Affine<Config>>>,
 {
     const SEED: u64 = 0;
     let mut rng = StdRng::seed_from_u64(SEED);

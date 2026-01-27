@@ -25,7 +25,7 @@ use crate::{
     },
     mac::{
         IdentityMac, IdentityMacKey, IteratedMac, Mac, MacKey, RandomFromPhi, digit,
-        endo::{EndoMacKey, EndoMultGroupMac},
+        endo::{EndoMacFq12, EndoMacKey, EndoMacKeyG1},
     },
     utils::error::{EvalError, GarbleError},
 };
@@ -285,8 +285,8 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
             .iter()
             .for_each(|key| c_ec_mac_key.push(EndoMacKey::random_from_phi(rng, &key.phi)));
         // This unwrap cannot fail because `pairing_output_mac_key` is a fixed
-        // array of `[EndoMultGroupMacKey; KAPPA_B]`.
-        let c_ec_mac_key: [EndoMacKey<g1::Config>; KAPPA_B] =
+        // array of `[EndoMacFq12Key; KAPPA_B]`.
+        let c_ec_mac_key: [EndoMacKeyG1; KAPPA_B] =
             c_ec_mac_key.try_into().unwrap_or_else(|_| panic!());
 
         // Garbling table for field_to_ec_mac of `A`
@@ -433,7 +433,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
                         .evaluate(&(A.into(), B.into()), &(a_ec_mac.clone(), b_ec_mac.clone()))
                         .1;
 
-                    let conditional_reveal_mac: Box<[EndoMultGroupMac; KAPPA_B]> = {
+                    let conditional_reveal_mac: Box<[EndoMacFq12; KAPPA_B]> = {
                         let mut conditional_reveal_mac = Vec::with_capacity(KAPPA_B);
                         (0..KAPPA_B).for_each(|idx| {
                             let AB = &AB_mac[idx];
@@ -452,7 +452,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
                             .unwrap_or_else(|_| panic!())
                     };
 
-                    let mac: IteratedMac<Fq12, EndoMultGroupMac, KAPPA_B> =
+                    let mac: IteratedMac<Fq12, EndoMacFq12, KAPPA_B> =
                         conditional_reveal_mac.into();
                     mac
                 })

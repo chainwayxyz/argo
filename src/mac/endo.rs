@@ -5,16 +5,17 @@
 
 use std::{marker::PhantomData, ops::Neg};
 
-use ark_bn254::{Fq, Fq12, Fr, g1, g2};
+use ark_bn254::{Bn254, Fq, Fq12, Fr, g1, g2};
 use ark_ec::{
     AdditiveGroup, CurveConfig, CurveGroup, PrimeGroup,
+    pairing::Pairing,
     scalar_mul::glv::GLVConfig,
     short_weierstrass::{Affine, Projective},
 };
-use ark_ff::{BigInt, BigInteger, CyclotomicMultSubgroup, Field, PrimeField, UniformRand};
+use ark_ff::{BigInt, BigInteger, Field, PrimeField, UniformRand};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::{Rng, rngs::StdRng};
-use derive_more::{Deref, From};
+use derive_more::Deref;
 use std::sync::LazyLock;
 
 use crate::{
@@ -25,21 +26,23 @@ use crate::{
 
 pub(crate) const ENDO_SIZE: usize = 7;
 
-pub static G1_P_SQ_MOD_R: LazyLock<<g1::Config as CurveConfig>::ScalarField> = LazyLock::new(|| {
-    let p =
+pub static G1_P_SQ_MOD_R: LazyLock<<g1::Config as CurveConfig>::ScalarField> =
+    LazyLock::new(|| {
+        let p =
         <<<g1::Config as CurveConfig>::BaseField as Field>::BasePrimeField as PrimeField>::MODULUS;
-    let p_mod_r =
-        <g1::Config as CurveConfig>::ScalarField::from_le_bytes_mod_order(&p.to_bytes_le());
-    p_mod_r.square()
-});
+        let p_mod_r =
+            <g1::Config as CurveConfig>::ScalarField::from_le_bytes_mod_order(&p.to_bytes_le());
+        p_mod_r.square()
+    });
 
-pub static G2_P_SQ_MOD_R: LazyLock<<g2::Config as CurveConfig>::ScalarField> = LazyLock::new(|| {
-    let p =
+pub static G2_P_SQ_MOD_R: LazyLock<<g2::Config as CurveConfig>::ScalarField> =
+    LazyLock::new(|| {
+        let p =
         <<<g2::Config as CurveConfig>::BaseField as Field>::BasePrimeField as PrimeField>::MODULUS;
-    let p_mod_r =
-        <g2::Config as CurveConfig>::ScalarField::from_le_bytes_mod_order(&p.to_bytes_le());
-    p_mod_r.square()
-});
+        let p_mod_r =
+            <g2::Config as CurveConfig>::ScalarField::from_le_bytes_mod_order(&p.to_bytes_le());
+        p_mod_r.square()
+    });
 
 #[derive(Clone, Copy)]
 pub enum EndoScalar<G> {
@@ -109,6 +112,44 @@ impl PSqModR for g1::Config {
 impl PSqModR for g2::Config {
     fn p_sq_mod_r() -> Self::ScalarField {
         *G2_P_SQ_MOD_R
+    }
+}
+
+pub(crate) trait Endo<G, Gt> {
+    fn endo(&self, value: Gt) -> Gt;
+}
+
+impl<G> Endo<Affine<G>, Affine<G>> for EndoScalar<G>
+where
+    G: GLVConfig + PSqModR,
+{
+    fn endo(&self, point: Affine<G>) -> Affine<G> {
+        match self {
+            Self::NegInf(_) => Affine::identity(),
+            _ => {
+                let phi = Self::omega_base().pow([self.as_u8() as u64]);
+                let (a, b) = {
+                    let phi_sq = phi.square();
+                    // (phi^4, phi^3)
+                    (phi_sq.square(), phi_sq * phi)
+                };
+
+                Affine {
+                    x: a * point.x,
+                    y: b * point.y,
+                    infinity: point.infinity,
+                }
+            }
+        }
+    }
+}
+
+impl Endo<Affine<g1::Config>, Fq12> for EndoScalar<g1::Config> {
+    fn endo(&self, value: Fq12) -> Fq12 {
+        match self {
+            EndoScalar::NegInf(_) => Fq12::ONE,
+            _ => value.frobenius_map(2 * self.as_u8() as usize),
+        }
     }
 }
 
@@ -198,25 +239,6 @@ where
             }
         }
     }
-
-    pub(crate) fn endo(&self, point: Affine<G>) -> Affine<G> {
-        match self {
-            Self::NegInf(_) => Affine::identity(),
-            _ => {
-                let phi = Self::omega_base().pow([self.as_u8() as u64]);
-                let (a, b) = {
-                    let phi_sq = phi.square();
-                    (phi_sq.square(), phi_sq * phi)
-                };
-
-                Affine {
-                    x: a * point.x,
-                    y: b * point.y,
-                    infinity: point.infinity,
-                }
-            }
-        }
-    }
 }
 
 impl<G: GLVConfig> EndoScalar<G> {
@@ -254,16 +276,6 @@ impl<G: GLVConfig> EndoScalar<G> {
             EndoScalar::Four(_) => 4,
             EndoScalar::Five(_) => 5,
             EndoScalar::NegInf(_) => 6,
-        }
-    }
-
-    pub(crate) fn endo_frob<C>(&self, value: &C) -> C
-    where
-        C: CyclotomicMultSubgroup<BasePrimeField = G::BaseField>,
-    {
-        match self {
-            EndoScalar::NegInf(_) => C::ONE,
-            _ => value.frobenius_map(2 * self.as_u8() as usize),
         }
     }
 
@@ -336,25 +348,74 @@ where
     }
 }
 
-#[derive(Clone, Copy, PartialEq, CanonicalSerialize, CanonicalDeserialize, From, Deref)]
-pub struct EndoMac<G: GLVConfig>(Affine<G>);
+#[derive(Clone, Copy, PartialEq, CanonicalSerialize, CanonicalDeserialize, Deref)]
+pub struct EndoMac<G, Gt>
+where
+    G: GLVConfig,
+    Gt: Sync + CanonicalSerialize + CanonicalDeserialize + Neg,
+{
+    #[deref]
+    mac: Gt,
+    _marker: PhantomData<G>,
+}
 
-impl<G: GLVConfig> Neg for EndoMac<G> {
+impl<G, Gt> Neg for EndoMac<G, Gt>
+where
+    G: GLVConfig,
+    Gt: Sync + CanonicalSerialize + CanonicalDeserialize + Neg<Output = Gt>,
+{
     type Output = Self;
 
     fn neg(self) -> Self::Output {
-        Self(-self.0)
+        Self {
+            mac: -self.mac,
+            _marker: PhantomData,
+        }
     }
 }
 
-pub(crate) type IteratedEndoMac<G, const N: usize> = IteratedMac<Affine<G>, EndoMac<G>, N>;
+impl<G, Gt> From<Gt> for EndoMac<G, Gt>
+where
+    G: GLVConfig,
+    Gt: Sync + CanonicalSerialize + CanonicalDeserialize + Neg,
+{
+    fn from(mac: Gt) -> Self {
+        Self {
+            mac,
+            _marker: PhantomData,
+        }
+    }
+}
 
-impl<G> Mac<Affine<G>> for EndoMac<G>
+pub(crate) type IteratedEndoMac<G, Gt, const N: usize> = IteratedMac<Gt, EndoMac<G, Gt>, N>;
+
+#[derive(Clone, Copy)]
+pub struct EndoMacKey<G: GLVConfig, Gt> {
+    pub(crate) phi: EndoScalar<G>,
+    pub(crate) k_scalar: Option<G::ScalarField>,
+    pub(crate) k: Gt,
+}
+
+pub(crate) type EndoMacG1 = EndoMac<g1::Config, Affine<g1::Config>>;
+pub(crate) type EndoMacKeyG1 = EndoMacKey<g1::Config, Affine<g1::Config>>;
+pub(crate) type IteratedEndoMacG1<const N: usize> =
+    IteratedEndoMac<g1::Config, Affine<g1::Config>, N>;
+
+pub(crate) type EndoMacG2 = EndoMac<g2::Config, Affine<g2::Config>>;
+pub(crate) type EndoMacKeyG2 = EndoMacKey<g2::Config, Affine<g2::Config>>;
+pub(crate) type IteratedEndoMacG2<const N: usize> =
+    IteratedEndoMac<g2::Config, Affine<g2::Config>, N>;
+
+pub(crate) type EndoMacFq12 = EndoMac<g1::Config, Fq12>;
+pub(crate) type EndoMacKeyFq12 = EndoMacKey<g1::Config, Fq12>;
+pub(crate) type IteratedEndoMacFq12<const N: usize> = IteratedEndoMac<g1::Config, Fq12, N>;
+
+impl<G> Mac<Affine<G>> for EndoMac<G, Affine<G>>
 where
     G: GLVConfig + Clone,
-    EndoMacKey<G>: RandomFromPhi<Affine<G>, Self>,
+    EndoMacKey<G, Affine<G>>: RandomFromPhi<Affine<G>, Self>,
 {
-    type Key = EndoMacKey<G>;
+    type Key = EndoMacKey<G, Affine<G>>;
 
     #[cfg(test)]
     fn random_input(rng: &mut StdRng) -> Affine<G> {
@@ -364,14 +425,7 @@ where
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct EndoMacKey<G: GLVConfig> {
-    pub(crate) phi: EndoScalar<G>,
-    pub(crate) k_scalar: Option<G::ScalarField>,
-    pub(crate) k: Affine<G>,
-}
-
-impl RandomFromPhi<Affine<g1::Config>, EndoMac<g1::Config>> for EndoMacKey<g1::Config> {
+impl RandomFromPhi<Affine<g1::Config>, EndoMacG1> for EndoMacKeyG1 {
     type Phi = EndoScalar<g1::Config>;
 
     fn random_from_phi(rng: &mut StdRng, phi: &EndoScalar<g1::Config>) -> Self {
@@ -386,7 +440,7 @@ impl RandomFromPhi<Affine<g1::Config>, EndoMac<g1::Config>> for EndoMacKey<g1::C
     }
 }
 
-impl RandomFromPhi<Affine<g2::Config>, EndoMac<g2::Config>> for EndoMacKey<g2::Config> {
+impl RandomFromPhi<Affine<g2::Config>, EndoMacG2> for EndoMacKeyG2 {
     type Phi = EndoScalar<g2::Config>;
 
     fn random_from_phi(rng: &mut StdRng, phi: &EndoScalar<g2::Config>) -> Self {
@@ -400,19 +454,38 @@ impl RandomFromPhi<Affine<g2::Config>, EndoMac<g2::Config>> for EndoMacKey<g2::C
     }
 }
 
-impl<G> MacKey<Affine<G>, EndoMac<G>> for EndoMacKey<G>
+impl RandomFromPhi<Fq12, EndoMacFq12> for EndoMacKeyFq12 {
+    type Phi = EndoScalar<g1::Config>;
+
+    fn random_from_phi(rng: &mut StdRng, phi: &EndoScalar<g1::Config>) -> Self {
+        Self {
+            phi: phi.clone(),
+            k_scalar: None,
+            k: Bn254::pairing(
+                Affine::<g1::Config>::rand(rng),
+                Affine::<g2::Config>::rand(rng),
+            )
+            .0,
+        }
+    }
+}
+
+impl<G> MacKey<Affine<G>, EndoMac<G, Affine<G>>> for EndoMacKey<G, Affine<G>>
 where
     G: GLVConfig + Clone,
     G: PSqModR,
-    Self: RandomFromPhi<Affine<G>, EndoMac<G>, Phi = EndoScalar<G>>,
+    Self: RandomFromPhi<Affine<G>, EndoMac<G, Affine<G>>, Phi = EndoScalar<G>>,
 {
-    fn encode(&self, value: &Affine<G>) -> EndoMac<G> {
+    fn encode(&self, value: &Affine<G>) -> EndoMac<G, Affine<G>> {
         let phi_mul_value = self.phi.endo(*value);
-        EndoMac((phi_mul_value + self.k).into_affine())
+        EndoMac {
+            mac: (phi_mul_value + self.k).into_affine(),
+            _marker: PhantomData,
+        }
     }
 
     #[cfg(test)]
-    fn decode(&self, _mac: &EndoMac<G>) -> Affine<G> {
+    fn decode(&self, _mac: &EndoMac<G, Affine<G>>) -> Affine<G> {
         unimplemented!()
     }
 
@@ -422,56 +495,40 @@ where
     }
 }
 
-/// G^phi * k, where phi is a bool and k is a curve point
-#[derive(Clone, PartialEq, CanonicalDeserialize, CanonicalSerialize, Deref, From)]
-pub(crate) struct EndoMultGroupMac(Fq12);
+impl Mac<Fq12> for EndoMacFq12
+where
+    EndoMacKeyFq12: RandomFromPhi<Fq12, Self>,
+{
+    type Key = EndoMacKeyFq12;
 
-pub(crate) type IteratedEndoMultGroupMac<const N: usize> = IteratedMac<Fq12, EndoMultGroupMac, N>;
+    #[cfg(test)]
+    fn random_input(rng: &mut StdRng) -> Fq12 {
+        use ark_std::rand::{distributions::Standard, prelude::Distribution as _};
 
-#[derive(Clone, Default)]
-pub(crate) struct EndoMultGroupMacKey {
-    pub(crate) phi: EndoScalar<g1::Config>,
-    pub(crate) k: Fq12,
-}
-
-impl RandomFromPhi<Fq12, EndoMultGroupMac> for EndoMultGroupMacKey {
-    type Phi = EndoScalar<g1::Config>;
-
-    fn random_from_phi(rng: &mut StdRng, phi: &Self::Phi) -> Self {
-        Self {
-            phi: phi.clone(),
-            k: Fq12::rand(rng),
-        }
+        Standard.sample(rng)
     }
 }
 
-impl MacKey<Fq12, EndoMultGroupMac> for EndoMultGroupMacKey {
-    fn encode(&self, value: &Fq12) -> EndoMultGroupMac {
-        let phi_x = self.phi.endo_frob(value);
-
-        (phi_x * self.k).into()
+impl MacKey<Fq12, EndoMacFq12> for EndoMacKeyFq12
+where
+    Self: RandomFromPhi<Fq12, EndoMacFq12, Phi = EndoScalar<g1::Config>>,
+{
+    fn encode(&self, value: &Fq12) -> EndoMacFq12 {
+        let phi_mul_value = self.phi.endo(*value);
+        EndoMac {
+            mac: phi_mul_value * self.k,
+            _marker: PhantomData,
+        }
     }
 
     #[cfg(test)]
-    fn decode(&self, _mac: &EndoMultGroupMac) -> Fq12 {
-        // We cannot decode a EndoMultGroupMac
+    fn decode(&self, _mac: &EndoMacFq12) -> Fq12 {
         unimplemented!()
     }
 
     fn random_key(rng: &mut StdRng) -> Self {
-        Self {
-            phi: EndoScalar::random(rng),
-            k: Fq12::rand(rng),
-        }
-    }
-}
-
-impl Mac<Fq12> for EndoMultGroupMac {
-    type Key = EndoMultGroupMacKey;
-
-    #[cfg(test)]
-    fn random_input(rng: &mut StdRng) -> Fq12 {
-        Fq12::rand(rng)
+        let phi = EndoScalar::random(rng);
+        Self::random_from_phi(rng, &phi)
     }
 }
 
@@ -514,17 +571,16 @@ fn test_gt_mac_commute() {
     let mut rng = StdRng::seed_from_u64(SEED);
 
     let point = G1Affine::rand(&mut rng);
-    let gt_point = Bn254::pairing(point, G2Affine::generator()).0;
-
-    let g1_mac_key = EndoMacKey::<G>::random_key(&mut rng);
-    let k = g1_mac_key.k;
+    let g1_mac_key = EndoMacKey::<G, Affine<G>>::random_key(&mut rng);
     let g1_mac = g1_mac_key.encode(&point);
 
-    let gt_mac_key = EndoMultGroupMacKey {
+    let gt_point = Bn254::pairing(point, G2Affine::generator()).0;
+    let gt_mac_key = EndoMacKeyFq12 {
         phi: g1_mac_key.phi,
-        k: Bn254::pairing(k, G2Affine::generator()).0,
+        k_scalar: None,
+        k: Bn254::pairing(g1_mac_key.k, G2Affine::generator()).0,
     };
     let gt_mac = gt_mac_key.encode(&gt_point);
 
-    assert_eq!(gt_mac.0, Bn254::pairing(g1_mac.0, G2Affine::generator()).0)
+    assert_eq!(*gt_mac, Bn254::pairing(*g1_mac, G2Affine::generator()).0)
 }

@@ -15,7 +15,7 @@ use crate::{
         IteratedMac, Random, RandomFromPhi,
         bit::{bytes::Bit16ByteMac, group::BitGroupMac},
         digit::{bytes, group},
-        endo::{EndoMac, EndoMacKey, EndoScalar, PSqModR},
+        endo::{Endo, EndoMac, EndoMacKey, EndoScalar, PSqModR},
         group::GroupMacKey,
     },
     utils::{
@@ -31,9 +31,10 @@ pub(crate) type InputMacKey<C> = bytes::DigitMacKey<<C as CurveConfig>::ScalarFi
 pub(crate) type InputMac<C> = bytes::DigitMac<<C as CurveConfig>::ScalarField>;
 
 pub(crate) type Output<C> = Affine<C>;
-pub(crate) type OutputMac<C, const KAPPA: usize> = IteratedMac<Affine<C>, EndoMac<C>, KAPPA>;
+pub(crate) type OutputMac<C, const KAPPA: usize> =
+    IteratedMac<Affine<C>, EndoMac<C, Affine<C>>, KAPPA>;
 // { \phi_i, b • c_i }
-pub(crate) type OutputMacKey<C, const KAPPA: usize> = [EndoMacKey<C>; KAPPA];
+pub(crate) type OutputMacKey<C, const KAPPA: usize> = [EndoMacKey<C, Affine<C>>; KAPPA];
 
 #[derive(Debug, CanonicalSerialize, CanonicalDeserialize)]
 pub(crate) struct Table<C: GLVConfig, const KAPPA: usize>
@@ -85,7 +86,7 @@ where
 
         // Construct the output MAC key using the given `phi`s and the randomly
         // sampled `k_scalars`.
-        let mut keys: Vec<EndoMacKey<C>> = Vec::with_capacity(KAPPA);
+        let mut keys = Vec::with_capacity(KAPPA);
         phis.iter()
             .zip(k_scalars)
             .zip(k)
@@ -112,7 +113,7 @@ where
     C: GLVConfig + Clone + PSqModR,
     C::ScalarField: Random + FromBits<C::ScalarField, C::ScalarField> + ToBits + NumBits,
     <C::ScalarField as Field>::BasePrimeField: FromLeBytesModOrder,
-    EndoMacKey<C>: RandomFromPhi<Affine<C>, EndoMac<C>>,
+    EndoMacKey<C, Affine<C>>: RandomFromPhi<Affine<C>, EndoMac<C, Affine<C>>>,
 {
     type Aux = (Affine<C>, [EndoScalar<C>; KAPPA]);
 
@@ -151,12 +152,12 @@ where
             .try_into_group_mac_key()
             .ok_or(GarbleError::DigitMacKeyReconstructionError)?;
 
-        let a = input_mac_key.phi;
-
         let (t, output_mac_key) = Self::output_mac_key_from_phis(rng, &input_mac_key, &phis);
 
         // output_mac_key.phi.endo(P) - [a]t
+        // `s` is a DDHMac
         let mut s = [Projective::<C>::zero(); KAPPA];
+        let a = input_mac_key.phi;
         s.iter_mut()
             .zip(output_mac_key.iter())
             .zip(t.iter())
@@ -207,11 +208,13 @@ where
             .t
             .iter()
             .zip(self.s.iter())
-            .map(|(t, s)| EndoMac::from((t.mul(*input_mac) + s.mul(input)).into_affine()))
+            .map(|(t, s)| {
+                EndoMac::<C, Affine<C>>::from((t.mul(*input_mac) + s.mul(input)).into_affine())
+            })
             .collect();
         // This unwrap cannot fail because both `self.t`, `self.s` are fixed
         // arrays of length `KAPPA`.
-        let output_mac: Box<[EndoMac<C>; KAPPA]> =
+        let output_mac: Box<[EndoMac<C, Affine<C>>; KAPPA]> =
             output_mac.try_into().unwrap_or_else(|_| panic!());
 
         Ok((self.point.mul(input).into_affine(), output_mac.into()))

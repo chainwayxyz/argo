@@ -34,8 +34,9 @@ use crate::{
 };
 
 pub(crate) type Output<Config> = Affine<Config>;
-pub(crate) type OutputMac<Config, const KAPPA: usize> = IteratedEndoMac<Config, KAPPA>;
-pub type OutputMacKey<Config, const KAPPA: usize> = [EndoMacKey<Config>; KAPPA];
+pub(crate) type OutputMac<Config, const KAPPA: usize> =
+    IteratedEndoMac<Config, Affine<Config>, KAPPA>;
+pub type OutputMacKey<Config, const KAPPA: usize> = [EndoMacKey<Config, Affine<Config>>; KAPPA];
 
 #[derive(CanonicalSerialize, CanonicalDeserialize)]
 pub struct Table<C, const KAPPA: usize>
@@ -58,7 +59,8 @@ where
     F: Field + NumBits + ToBits + FromBits<F, F> + FromBits<bool, F> + Random,
     F::BasePrimeField: FromLeBytesModOrder,
     Config: PSqModR,
-    EndoMacKey<Config>: RandomFromPhi<Affine<Config>, EndoMac<Config>>,
+    EndoMacKey<Config, Affine<Config>>:
+        RandomFromPhi<Affine<Config>, EndoMac<Config, Affine<Config>>>,
 {
     type Aux = (bool, OutputMacKey<Config, KAPPA>);
 
@@ -77,7 +79,7 @@ where
         let (is_full, output_mac_key) = aux
             .ok_or_else(|| GarbleError::AuxError(type_name::<Self::Aux>(), type_name::<Self>()))?;
 
-        fn x_aux<C, F>(mac_key: &EndoMacKey<C>, a2: F) -> Result<Poly<F>, GarbleError>
+        fn x_aux<C, F>(mac_key: &EndoMacKey<C, Affine<C>>, a2: F) -> Result<Poly<F>, GarbleError>
         where
             C: GLVConfig<BaseField = F>,
             C: PSqModR,
@@ -113,7 +115,7 @@ where
             Ok(cs)
         }
 
-        fn y_aux<C, F>(mac_key: &EndoMacKey<C>, a3: F) -> Result<Poly<F>, GarbleError>
+        fn y_aux<C, F>(mac_key: &EndoMacKey<C, Affine<C>>, a3: F) -> Result<Poly<F>, GarbleError>
         where
             C: GLVConfig<BaseField = F>,
             C: PSqModR,
@@ -149,7 +151,7 @@ where
             Ok(cs)
         }
 
-        fn z_aux<C, F>(mac_key: &EndoMacKey<C>, a: F) -> Result<Poly<F>, GarbleError>
+        fn z_aux<C, F>(mac_key: &EndoMacKey<C, Affine<C>>, a: F) -> Result<Poly<F>, GarbleError>
         where
             C: GLVConfig<BaseField = F>,
             C: PSqModR,
@@ -285,7 +287,8 @@ where
             });
 
         // FIXME can this unwrap fail?
-        let macs: Box<[EndoMac<Config>; KAPPA]> = macs.try_into().unwrap_or_else(|_| panic!());
+        let macs: Box<[EndoMac<Config, Affine<Config>>; KAPPA]> =
+            macs.try_into().unwrap_or_else(|_| panic!());
 
         Ok((Affine::new_unchecked(input.x, input.y), macs.into()))
     }
@@ -303,7 +306,7 @@ where
         + ToBits
         + FromBits<C::BaseField, C::BaseField>,
     <C::BaseField as Field>::BasePrimeField: FromLeBytesModOrder,
-    EndoMacKey<C>: RandomFromPhi<Affine<C>, EndoMac<C>>,
+    EndoMacKey<C, Affine<C>>: RandomFromPhi<Affine<C>, EndoMac<C, Affine<C>>>,
 {
     use crate::{
         garble::bit_adaptor::clear_set as bit_adaptor_clear_set, mac::MacKey,
@@ -382,7 +385,7 @@ where
         + Random
         + ToBits
         + FromBits<C::BaseField, C::BaseField>,
-    EndoMacKey<C>: RandomFromPhi<Affine<C>, EndoMac<C>>,
+    EndoMacKey<C, Affine<C>>: RandomFromPhi<Affine<C>, EndoMac<C, Affine<C>>>,
 {
     use crate::{
         garble::{Circuit, Nonce},

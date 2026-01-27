@@ -17,7 +17,7 @@ use crate::{
     garble::groth16_verifier::{self, GarblePreprocessedVk},
     mac::{
         MacKey,
-        endo::{ENDO_SIZE, EndoMacKey, EndoMultGroupMacKey, EndoScalar, IteratedEndoMultGroupMac},
+        endo::{ENDO_SIZE, Endo, EndoMacKeyFq12, EndoMacKeyG1, EndoScalar, IteratedEndoMacFq12},
     },
     utils::{
         error::{EvalError, GarbleError},
@@ -27,8 +27,8 @@ use crate::{
 
 /// Input is a single P::TargetField
 type Input = Fq12;
-pub(crate) type InputMac<const KAPPA: usize> = IteratedEndoMultGroupMac<KAPPA>;
-type InputMacKey<const KAPPA: usize> = [EndoMultGroupMacKey; KAPPA];
+pub(crate) type InputMac<const KAPPA: usize> = IteratedEndoMacFq12<KAPPA>;
+type InputMacKey<const KAPPA: usize> = [EndoMacKeyFq12; KAPPA];
 
 pub(crate) type Output = Fq;
 
@@ -47,9 +47,9 @@ impl<const KAPPA: usize> Table<KAPPA> {
     /// multiplicative subgroup of Fq12.
     pub(crate) fn groth16_input_mac_key(
         verifier_key: &groth16_verifier::VerifierKey,
-        pairing_output_mac_key: &[EndoMultGroupMacKey; KAPPA],
-        c_ec_mac_key: &[EndoMacKey<G1Config>; KAPPA],
-        x_G_output_mac_key: &[EndoMacKey<G1Config>; KAPPA],
+        pairing_output_mac_key: &[EndoMacKeyFq12; KAPPA],
+        c_ec_mac_key: &[EndoMacKeyG1; KAPPA],
+        x_G_output_mac_key: &[EndoMacKeyG1; KAPPA],
     ) -> Result<InputMacKey<KAPPA>, GarbleError> {
         let GarblePreprocessedVk {
             h1_target_pow_2,
@@ -111,15 +111,19 @@ impl<const KAPPA: usize> Table<KAPPA> {
             // This has the effect of multiplying the MAC'd value by c
             // This panics if `c` = Fq12::ZERO, since `c` must be in the
             // Fq12 multiplicative subgroup.
-            let c_term = phi.endo_frob(
-                &verifier_key
+            let c_term = phi.endo(
+                verifier_key
                     .c
                     .inverse()
                     .expect("verifier_key.c must be in the Fq12 multiplicative subgroup."),
             );
             let k = k * AB.k * c_term;
 
-            key.push(EndoMultGroupMacKey { phi, k });
+            key.push(EndoMacKeyFq12 {
+                phi,
+                k_scalar: None,
+                k,
+            });
         }
 
         // This unwrap cannot fail because `pairing_output_mac_key`,
@@ -169,7 +173,7 @@ impl<const KAPPA: usize> Table<KAPPA> {
             input_exp
                 .iter_mut()
                 .zip(phis.iter())
-                .for_each(|(input_exp, phi)| *input_exp = phi.endo_frob(input));
+                .for_each(|(input_exp, phi)| *input_exp = phi.endo(*input));
 
             input_exp
         };
@@ -179,7 +183,7 @@ impl<const KAPPA: usize> Table<KAPPA> {
         // - one_mac   = 1 ^ {phi_i} * k_i
         // - input_mac = input ^ {phi_i} * k_i
         // - input_mac / one_mac = input^{phi_i}
-        let mut one_inv: Vec<_> = self.one_mac.iter().map(|v| **v).collect();
+        let mut one_inv: Vec<_> = self.one_mac.value.iter().map(|v| **v).collect();
         batch_inversion(&mut one_inv);
 
         let input_mac_div_one = input_macs

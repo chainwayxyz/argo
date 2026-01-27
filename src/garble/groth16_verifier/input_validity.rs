@@ -14,7 +14,7 @@ use crate::{
     },
     mac::{
         IteratedMac,
-        endo::{EndoMac, EndoMacKey},
+        endo::{EndoMacG2, EndoMacKeyG2},
     },
     utils::{
         bits::NumBits,
@@ -48,7 +48,7 @@ pub struct Table {
 pub(crate) struct Aux {
     pub(super) secret: Fq,
     pub(super) gid: GID,
-    pub(super) b_ec_mac_key: Box<[EndoMacKey<g2::Config>; KAPPA_B]>,
+    pub(super) b_ec_mac_key: Box<[EndoMacKeyG2; KAPPA_B]>,
 }
 
 // TODO refactor to use Circuit trait?
@@ -199,7 +199,7 @@ impl Table {
         parent_nonce: &mut crate::garble::Nonce,
         input: &Input,
         input_mac: &InputMac,
-        b_ec_mac: &IteratedMac<G2Affine, EndoMac<g2::Config>, KAPPA_B>,
+        b_ec_mac: &IteratedMac<G2Affine, EndoMacG2, KAPPA_B>,
     ) -> Result<Fq, EvalError> {
         // The Groth16 input (A, B, C).
         let Input { A, B, C, x } = *input;
@@ -370,7 +370,7 @@ fn test_malformed_curve_points() {
     let input = InputMac::random_input(&mut rng);
     let input_mac_key = InputMacKey::random_key(&mut rng);
 
-    let b_ec_mac_key = <[EndoMacKey<g2::Config>; KAPPA_B]>::random_key(&mut rng);
+    let b_ec_mac_key = <[EndoMacKeyG2; KAPPA_B]>::random_key(&mut rng);
 
     let aux = Aux {
         secret,

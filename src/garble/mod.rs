@@ -5,6 +5,7 @@ use crate::{
     utils::error::{EvalError, GarbleError},
 };
 
+// pub(crate) mod bilinear;
 pub(crate) mod binary;
 pub(crate) mod bit_adaptor;
 pub mod bivariate;

@@ -6,7 +6,7 @@ use std::{marker::PhantomData, sync::LazyLock};
 use ark_bn254::{Bn254, Fq2, Fq12, Fr, G1Projective, G2Affine, G2Projective, g1, g2};
 use ark_ec::{
     AffineRepr, CurveGroup, PrimeGroup, ScalarMul,
-    pairing::{Pairing, PairingOutput},
+    pairing::Pairing,
     scalar_mul::glv::GLVConfig,
     short_weierstrass::{Affine, Projective},
 };
@@ -19,19 +19,33 @@ use crate::{
     mac::{
         Mac, MacKey,
         endo::{
-            ENDO_SIZE, EndoMacKey, EndoMultGroupMac, EndoMultGroupMacKey, EndoScalar,
-            IteratedEndoMac, IteratedEndoMultGroupMac,
+            ENDO_SIZE, Endo, EndoMacFq12, EndoMacKey, EndoMacKeyFq12, EndoMacKeyG1, EndoMacKeyG2,
+            EndoScalar, IteratedEndoMacFq12, IteratedEndoMacG1, IteratedEndoMacG2,
         },
     },
     utils::bits::pow_n_lincomb,
 };
 
-/// e(G, H)
-pub static TARGET_GENERATOR: LazyLock<PairingOutput<Bn254>> = LazyLock::new(|| {
-    Bn254::multi_pairing(
+/// Powers of 2 of e(G, H)
+pub static TARGET_GENERATOR_POW_2: LazyLock<Vec<Fq12>> = LazyLock::new(|| {
+    let target_generator = Bn254::multi_pairing(
         vec![<G1Projective as PrimeGroup>::generator()],
         vec![G2Projective::generator()],
     )
+    .0;
+
+    let powers_of_2 = {
+        let mut powers = Vec::with_capacity(Fr::MODULUS_BIT_SIZE as usize);
+        let mut p = target_generator;
+        powers.push(p);
+        for _ in 1..Fr::MODULUS_BIT_SIZE {
+            p.square_in_place();
+            powers.push(p);
+        }
+        powers
+    };
+
+    powers_of_2
 });
 
 /// [r]P, where P is a point on E'/Fp2 with x-coordinate = 1
@@ -47,18 +61,12 @@ pub static R_MUL_COFACTOR_GENERATOR: LazyLock<Affine<g2::Config>> = LazyLock::ne
 pub(crate) const GENERATOR_EXPONENT: usize = 3;
 
 pub(crate) type Input = (Affine<g1::Config>, Affine<g2::Config>);
-pub(crate) type InputMacKey = (
-    [EndoMacKey<g1::Config>; KAPPA_A],
-    [EndoMacKey<g2::Config>; KAPPA_B],
-);
-pub(crate) type InputMac = (
-    IteratedEndoMac<g1::Config, KAPPA_A>,
-    IteratedEndoMac<g2::Config, KAPPA_B>,
-);
+pub(crate) type InputMacKey = ([EndoMacKeyG1; KAPPA_A], [EndoMacKeyG2; KAPPA_B]);
+pub(crate) type InputMac = (IteratedEndoMacG1<KAPPA_A>, IteratedEndoMacG2<KAPPA_B>);
 
 pub(crate) type Output = Fq12;
-pub(crate) type OutputMacKey = [EndoMultGroupMacKey; KAPPA_B];
-pub(crate) type OutputMac = IteratedEndoMultGroupMac<KAPPA_B>;
+pub(crate) type OutputMacKey = [EndoMacKeyFq12; KAPPA_B];
+pub(crate) type OutputMac = IteratedEndoMacFq12<KAPPA_B>;
 
 impl Mac<Input> for InputMac {
     type Key = InputMacKey;
@@ -126,12 +134,12 @@ impl Table {
         B_mac.zip(self.0.iter()).for_each(|(B_mac, X)| {
             let pairing =
                 Bn254::multi_pairing(vec![*A, S.into_affine()], vec![B_mac.into_affine(), *X]);
-            output_mac.push(EndoMultGroupMac::from(pairing.0));
+            output_mac.push(EndoMacFq12::from(pairing.0));
         });
 
         // This unwrap cannot fail since both `B_mac` and `self.0` are fixed
         // arrays of size `KAPPA_B`.
-        let output_mac: Box<[EndoMultGroupMac; KAPPA_B]> =
+        let output_mac: Box<[EndoMacFq12; KAPPA_B]> =
             output_mac.try_into().unwrap_or_else(|_| panic!());
 
         (output.0, output_mac.into())
@@ -291,7 +299,7 @@ impl Table {
             assert_eq!(x, expected_x);
         }
 
-        // Compute g2_B_ks_scalar in-place without intermediate Vec
+        // Compute g2_B_ks_scalar
         let mut g2_B_ks_scalar = [Fr::ZERO; KAPPA_B];
         for (i, r) in rs.iter().enumerate() {
             g2_B_ks_scalar[i] = -*r * x;
@@ -309,28 +317,16 @@ impl Table {
             EndoScalar::<g1::Config>::two_minus_omega(),
         );
 
-        // Precompute powers of 2 once
-        let powers_of_2 = {
-            let mut powers = Vec::with_capacity(Fr::MODULUS_BIT_SIZE as usize);
-            let mut p = TARGET_GENERATOR.0;
-            powers.push(p);
-            for _ in 1..Fr::MODULUS_BIT_SIZE {
-                p.square_in_place();
-                powers.push(p);
-            }
-            powers
-        };
-
         // Compute output_ks
         let mut output_ks = [Fq12::ZERO; KAPPA_B];
         for (output_k, r) in output_ks.iter_mut().zip(rs.iter()) {
             let exp = (*r * k).into_bigint();
             // This unwrap cannot fail because we compute enough `powers_of_2`
             // for `Fr`.
-            *output_k = Fq12::pow_with_table(&powers_of_2, exp).unwrap();
+            *output_k = Fq12::pow_with_table(&TARGET_GENERATOR_POW_2, exp).unwrap();
         }
 
-        // Build A_mac_key efficiently with known size
+        // Build A_mac_key
         let mut A_mac_key = Vec::with_capacity(KAPPA_A);
         for ((phi, &k_scalar), &k) in A_phis.iter().zip(A_ks_scalar.iter()).zip(A_ks.iter()) {
             A_mac_key.push(EndoMacKey {
@@ -343,7 +339,9 @@ impl Table {
         // all fixed-size arrays of length `KAPPA_A`.
         let A_mac_key = A_mac_key.try_into().unwrap_or_else(|_| panic!());
 
-        // Build B_mac_key efficiently with known size
+        // Build B_mac_key
+        // This is a DDHMacKey
+        // scalar is x, public vector is [r_i]G
         let mut B_mac_key = Vec::with_capacity(KAPPA_B);
         for ((phi, &k_scalar), &k) in B_phis.iter().zip(g2_B_ks_scalar.iter()).zip(B_ks.iter()) {
             B_mac_key.push(EndoMacKey {
@@ -356,11 +354,12 @@ impl Table {
         // are all of length `KAPPA_B`.
         let B_mac_key = B_mac_key.try_into().unwrap_or_else(|_| panic!());
 
-        // Build output_mac_key efficiently with known size
+        // Build output_mac_key
         let mut output_mac_key = Vec::with_capacity(KAPPA_B);
         for (phi, k_val) in B_phis.iter().zip(output_ks.iter()) {
-            output_mac_key.push(EndoMultGroupMacKey {
+            output_mac_key.push(EndoMacKeyFq12 {
                 phi: phi.clone().into(),
+                k_scalar: None,
                 k: *k_val,
             });
         }
