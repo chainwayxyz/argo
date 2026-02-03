@@ -3,6 +3,9 @@
 /// Bit composition and bitwise operations
 pub mod bits;
 
+/// Constants
+pub mod constants;
+
 /// Error types
 pub mod error;
 

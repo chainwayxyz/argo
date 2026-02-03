@@ -7,42 +7,28 @@ use std::{marker::PhantomData, ops::Neg};
 
 use ark_bn254::{Bn254, Fq, Fq12, Fr, g1, g2};
 use ark_ec::{
-    AdditiveGroup, CurveConfig, CurveGroup, PrimeGroup,
+    AdditiveGroup, CurveGroup, PrimeGroup,
     pairing::Pairing,
     scalar_mul::glv::GLVConfig,
     short_weierstrass::{Affine, Projective},
 };
-use ark_ff::{BigInt, BigInteger, Field, PrimeField, UniformRand};
+use ark_ff::{BigInt, Field, UniformRand};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::{Rng, rngs::StdRng};
 use derive_more::Deref;
-use std::sync::LazyLock;
 
 use crate::{
     garble::{bivariate::Poly, groth16_verifier::KAPPA_B},
     mac::{IteratedMac, Mac, MacKey, Random, RandomFromPhi},
-    utils::{bits::pow_n_lincomb, error::EvalError, group::get_curve_point_not_in_g2},
+    utils::{
+        bits::pow_n_lincomb,
+        constants::{G1_P_SQ_MOD_R, G2_P_SQ_MOD_R},
+        error::EvalError,
+        group::get_curve_point_not_in_g2,
+    },
 };
 
 pub(crate) const ENDO_SIZE: usize = 7;
-
-pub static G1_P_SQ_MOD_R: LazyLock<<g1::Config as CurveConfig>::ScalarField> =
-    LazyLock::new(|| {
-        let p =
-        <<<g1::Config as CurveConfig>::BaseField as Field>::BasePrimeField as PrimeField>::MODULUS;
-        let p_mod_r =
-            <g1::Config as CurveConfig>::ScalarField::from_le_bytes_mod_order(&p.to_bytes_le());
-        p_mod_r.square()
-    });
-
-pub static G2_P_SQ_MOD_R: LazyLock<<g2::Config as CurveConfig>::ScalarField> =
-    LazyLock::new(|| {
-        let p =
-        <<<g2::Config as CurveConfig>::BaseField as Field>::BasePrimeField as PrimeField>::MODULUS;
-        let p_mod_r =
-            <g2::Config as CurveConfig>::ScalarField::from_le_bytes_mod_order(&p.to_bytes_le());
-        p_mod_r.square()
-    });
 
 #[derive(Clone, Copy)]
 pub enum EndoScalar<G> {
@@ -87,6 +73,20 @@ impl<G> Eq for EndoScalar<G> {}
 
 impl From<EndoScalar<g2::Config>> for EndoScalar<g1::Config> {
     fn from(value: EndoScalar<g2::Config>) -> Self {
+        match value {
+            EndoScalar::Zero(_) => EndoScalar::Zero(PhantomData),
+            EndoScalar::One(_) => EndoScalar::One(PhantomData),
+            EndoScalar::Two(_) => EndoScalar::Two(PhantomData),
+            EndoScalar::Three(_) => EndoScalar::Three(PhantomData),
+            EndoScalar::Four(_) => EndoScalar::Four(PhantomData),
+            EndoScalar::Five(_) => EndoScalar::Five(PhantomData),
+            EndoScalar::NegInf(_) => EndoScalar::NegInf(PhantomData),
+        }
+    }
+}
+
+impl From<EndoScalar<g1::Config>> for EndoScalar<g2::Config> {
+    fn from(value: EndoScalar<g1::Config>) -> Self {
         match value {
             EndoScalar::Zero(_) => EndoScalar::Zero(PhantomData),
             EndoScalar::One(_) => EndoScalar::One(PhantomData),
@@ -144,7 +144,7 @@ where
     }
 }
 
-impl Endo<Affine<g1::Config>, Fq12> for EndoScalar<g1::Config> {
+impl Endo<Affine<g2::Config>, Fq12> for EndoScalar<g2::Config> {
     fn endo(&self, value: Fq12) -> Fq12 {
         match self {
             EndoScalar::NegInf(_) => Fq12::ONE,
@@ -406,9 +406,9 @@ pub(crate) type EndoMacKeyG2 = EndoMacKey<g2::Config, Affine<g2::Config>>;
 pub(crate) type IteratedEndoMacG2<const N: usize> =
     IteratedEndoMac<g2::Config, Affine<g2::Config>, N>;
 
-pub(crate) type EndoMacFq12 = EndoMac<g1::Config, Fq12>;
-pub(crate) type EndoMacKeyFq12 = EndoMacKey<g1::Config, Fq12>;
-pub(crate) type IteratedEndoMacFq12<const N: usize> = IteratedEndoMac<g1::Config, Fq12, N>;
+pub(crate) type EndoMacFq12 = EndoMac<g2::Config, Fq12>;
+pub(crate) type EndoMacKeyFq12 = EndoMacKey<g2::Config, Fq12>;
+pub(crate) type IteratedEndoMacFq12<const N: usize> = IteratedEndoMac<g2::Config, Fq12, N>;
 
 impl<G> Mac<Affine<G>> for EndoMac<G, Affine<G>>
 where
@@ -455,9 +455,9 @@ impl RandomFromPhi<Affine<g2::Config>, EndoMacG2> for EndoMacKeyG2 {
 }
 
 impl RandomFromPhi<Fq12, EndoMacFq12> for EndoMacKeyFq12 {
-    type Phi = EndoScalar<g1::Config>;
+    type Phi = EndoScalar<g2::Config>;
 
-    fn random_from_phi(rng: &mut StdRng, phi: &EndoScalar<g1::Config>) -> Self {
+    fn random_from_phi(rng: &mut StdRng, phi: &EndoScalar<g2::Config>) -> Self {
         Self {
             phi: phi.clone(),
             k_scalar: None,
@@ -511,7 +511,7 @@ where
 
 impl MacKey<Fq12, EndoMacFq12> for EndoMacKeyFq12
 where
-    Self: RandomFromPhi<Fq12, EndoMacFq12, Phi = EndoScalar<g1::Config>>,
+    Self: RandomFromPhi<Fq12, EndoMacFq12, Phi = EndoScalar<g2::Config>>,
 {
     fn encode(&self, value: &Fq12) -> EndoMacFq12 {
         let phi_mul_value = self.phi.endo(*value);
@@ -576,7 +576,7 @@ fn test_gt_mac_commute() {
 
     let gt_point = Bn254::pairing(point, G2Affine::generator()).0;
     let gt_mac_key = EndoMacKeyFq12 {
-        phi: g1_mac_key.phi,
+        phi: g1_mac_key.phi.into(),
         k_scalar: None,
         k: Bn254::pairing(g1_mac_key.k, G2Affine::generator()).0,
     };

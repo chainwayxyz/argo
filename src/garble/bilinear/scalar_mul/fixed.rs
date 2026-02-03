@@ -1,21 +1,22 @@
-//! Scalar mul [x]P where x is a scalar, P is a fixed curve point
+use std::{any::type_name, marker::PhantomData};
+
 use ark_ec::{
     AdditiveGroup, CurveConfig, CurveGroup, PrimeGroup, ScalarMul,
     scalar_mul::glv::GLVConfig,
     short_weierstrass::{Affine, Projective},
 };
-use ark_ff::{Field, Zero};
+use ark_ff::Field;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::{UniformRand, rand::rngs::StdRng};
-use std::{any::type_name, ops::Mul};
 
 use crate::{
     garble::{Circuit, Nonce, bit_adaptor},
     mac::{
-        IteratedMac, Random, RandomFromPhi,
+        IteratedMac, MacKey, Random, RandomFromPhi,
         bit::{bytes::Bit16ByteMac, group::BitGroupMac},
+        ddh::{DDHMac, DDHMacKey},
         digit::{bytes, group},
-        endo::{Endo, EndoMac, EndoMacKey, EndoScalar, PSqModR},
+        endo::{EndoMac, EndoMacKey, EndoScalar, PSqModR},
         group::GroupMacKey,
     },
     utils::{
@@ -39,6 +40,7 @@ pub(crate) type OutputMacKey<C, const KAPPA: usize> = [EndoMacKey<C, Affine<C>>;
 #[derive(Debug, CanonicalSerialize, CanonicalDeserialize)]
 pub(crate) struct Table<C: GLVConfig, const KAPPA: usize>
 where
+    C: GLVConfig,
     C::ScalarField: Random,
     <C::ScalarField as Field>::BasePrimeField: FromLeBytesModOrder,
 {
@@ -48,13 +50,14 @@ where
     /// The fixed base `P`.
     pub(crate) point: Affine<C>,
     /// S_i = [\phi_i]P + [a • c_i]P
-    pub(crate) s: [Affine<C>; KAPPA],
+    pub(crate) s: DDHMac<C, KAPPA>,
     /// T_i = [c_i]P
-    pub(crate) t: [Affine<C>; KAPPA],
+    pub(crate) bilinear_table: super::super::Table<C::ScalarField, C, Affine<C>, KAPPA>,
 }
 
-impl<C: GLVConfig + Clone, const KAPPA: usize> Table<C, KAPPA>
+impl<C, const KAPPA: usize> Table<C, KAPPA>
 where
+    C: GLVConfig + Clone,
     C::ScalarField: Random,
     <C::ScalarField as Field>::BasePrimeField: FromLeBytesModOrder,
 {
@@ -152,27 +155,25 @@ where
             .try_into_group_mac_key()
             .ok_or(GarbleError::DigitMacKeyReconstructionError)?;
 
-        let (t, output_mac_key) = Self::output_mac_key_from_phis(rng, &input_mac_key, &phis);
+        let (T, output_mac_key) = Self::output_mac_key_from_phis(rng, &input_mac_key, &phis);
 
-        // output_mac_key.phi.endo(P) - [a]t
-        // `s` is a DDHMac
-        let mut s = [Projective::<C>::zero(); KAPPA];
-        let a = input_mac_key.phi;
-        s.iter_mut()
-            .zip(output_mac_key.iter())
-            .zip(t.iter())
-            .for_each(|((s, key), t)| *s = key.phi.endo(point) - t.mul(a));
-        let s = Projective::<C>::normalize_batch(&s);
-        // This unwrap cannot fail because `output_mac_key` is a fixed
-        // array of `[EndoMacKey; KAPPA]`.
-        let s = s.try_into().unwrap();
+        let ddh_mac_key = DDHMacKey {
+            T,
+            phis,
+            a: -input_mac_key.phi,
+        };
+        let ddh_mac = ddh_mac_key.encode(&point);
+        let bilinear_table = super::super::Table {
+            T,
+            _marker: PhantomData,
+        };
 
         Ok((
             Self {
                 adaptors,
                 point,
-                s,
-                t,
+                s: ddh_mac,
+                bilinear_table,
             },
             output_mac_key.clone(),
         ))
@@ -204,20 +205,14 @@ where
         let input_mac = input_mac.try_into_group_mac()?;
 
         //   [input_mac] t + [input] s
-        let output_mac: Vec<_> = self
-            .t
-            .iter()
-            .zip(self.s.iter())
-            .map(|(t, s)| {
-                EndoMac::<C, Affine<C>>::from((t.mul(*input_mac) + s.mul(input)).into_affine())
-            })
-            .collect();
+        let output_mac = self.bilinear_table.evaluate(input, &input_mac, &self.s);
+
         // This unwrap cannot fail because both `self.t`, `self.s` are fixed
         // arrays of length `KAPPA`.
         let output_mac: Box<[EndoMac<C, Affine<C>>; KAPPA]> =
             output_mac.try_into().unwrap_or_else(|_| panic!());
 
-        Ok((self.point.mul(input).into_affine(), output_mac.into()))
+        Ok(((self.point * input).into_affine(), output_mac.into()))
     }
 }
 

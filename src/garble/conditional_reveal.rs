@@ -3,7 +3,7 @@
 //!
 //! When evaluated on an input != one and its MAC, it returns the `secret`.
 
-use ark_bn254::{Fq, Fq12, g1::Config as G1Config};
+use ark_bn254::{Fq, Fq12, g2::Config as G2Config};
 use ark_ec::scalar_mul::glv::GLVConfig;
 use ark_ff::{
     AdditiveGroup, BigInteger, Field, Fp12, PrimeField, batch_inversion,
@@ -69,7 +69,7 @@ impl<const KAPPA: usize> Table<KAPPA> {
             .zip(x_G_output_mac_key.iter())
         {
             // All these MAC keys use the same phi
-            let phi = C.phi.clone();
+            let phi: EndoScalar<G2Config> = C.phi.clone().into();
             let C_k_scalar = C
                 .k_scalar
                 .ok_or(GarbleError::MissingKScalar("C"))?
@@ -163,7 +163,7 @@ impl<const KAPPA: usize> Table<KAPPA> {
         input: &Input,
         input_macs: &[InputMac<KAPPA>],
     ) -> Result<Output, EvalError> {
-        let phis = EndoScalar::<G1Config>::iter();
+        let phis = EndoScalar::<G2Config>::iter();
         let input_exp = if *input == Fq12::ONE {
             vec![Fq12::ONE]
         } else {
@@ -217,7 +217,7 @@ impl<const KAPPA: usize> Table<KAPPA> {
                 .map(|&idx| phis[idx.unwrap()].clone())
                 .collect()
         } else {
-            EndoScalar::<G1Config>::decode(&recovered_phis)?
+            EndoScalar::<G2Config>::decode(&recovered_phis)?
         };
 
         if *input == Fq12::ONE && phis.iter().all(|phi| matches!(phi, EndoScalar::Zero(_))) {

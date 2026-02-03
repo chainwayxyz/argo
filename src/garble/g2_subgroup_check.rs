@@ -180,7 +180,8 @@ fn test_g2_subgroup_check() {
 ///      = r (psi - phi) / (phi + psi) r_K
 #[test]
 fn test_g2_subgroup_check_decoding_error() {
-    use crate::garble::pairing::{GENERATOR_EXPONENT, R_MUL_COFACTOR_GENERATOR};
+    use crate::garble::bilinear::pairing::GENERATOR_EXPONENT;
+    use crate::utils::constants::R_MUL_COFACTOR_GENERATOR;
     use num_bigint::BigInt;
 
     use crate::{

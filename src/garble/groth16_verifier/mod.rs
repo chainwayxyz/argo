@@ -12,22 +12,41 @@ use core::panic;
 use std::{any::type_name, marker::PhantomData};
 
 use ark_bn254::{Bn254, Fq, Fq2, Fq12, Fr, G1Affine, G2Affine, g1, g2};
-use ark_ec::{AffineRepr, CurveGroup, pairing::Pairing};
+use ark_ec::{
+    AffineRepr, CurveGroup,
+    pairing::Pairing,
+    short_weierstrass::{Affine, Projective},
+};
 use ark_ff::{AdditiveGroup, Field, PrimeField};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use ark_std::rand::{SeedableRng, rngs::StdRng};
+use ark_std::{
+    UniformRand,
+    rand::{SeedableRng, rngs::StdRng},
+};
+use num_bigint::BigInt;
 use parking_lot::RwLock;
 use rayon::iter::{ParallelBridge, ParallelIterator};
 
 use crate::{
     garble::{
-        Circuit, Nonce, bivariate, conditional_reveal, field_mac_to_ec_mac, pairing, scalar_mul,
+        Circuit, Nonce,
+        bilinear::{
+            pairing::{self, GENERATOR_EXPONENT},
+            scalar_mul,
+        },
+        bivariate, conditional_reveal, field_mac_to_ec_mac,
+        keys::{a_ec_mac_key, b_mac_key},
     },
     mac::{
-        IdentityMac, IdentityMacKey, IteratedMac, Mac, MacKey, RandomFromPhi, digit,
-        endo::{EndoMacFq12, EndoMacKey, EndoMacKeyG1},
+        IdentityMac, IdentityMacKey, IteratedMac, Mac, MacKey, RandomFromPhi,
+        ddh::DDHMac,
+        digit,
+        endo::{EndoMacFq12, EndoMacG2, EndoMacKeyG1},
     },
-    utils::error::{EvalError, GarbleError},
+    utils::{
+        constants::R_MUL_COFACTOR_GENERATOR,
+        error::{EvalError, GarbleError},
+    },
 };
 
 #[cfg(test)]
@@ -36,8 +55,6 @@ use crate::mac::Random;
 use crate::utils::aes_hash::{
     aes_ctr::clear_set as aes_ctr_clear_set, aes_mitccr::clear_set as aes_mitccr_clear_set,
 };
-#[cfg(test)]
-use ark_ff::UniformRand;
 
 static PREPROCESSED_VK: RwLock<Option<GarblePreprocessedVk>> = RwLock::new(None);
 
@@ -264,13 +281,23 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         let (secret, gid, verifier_key) = aux
             .ok_or_else(|| GarbleError::AuxError(type_name::<Self::Aux>(), type_name::<Self>()))?;
 
-        // Sample random MAC keys and auxiliary values for the pairing table:
-        // - a_ec_mac_key: used as the output key for field_to_ec_mac of `A`
-        // - b_ec_mac_key: used as the output key for field_to_ec_mac of `B`
-        // - pairing_output_mac_key: used to derive the input key for conditional_reveal
-        // - X: used in the pairing e(A,B) garbling table
-        let ((a_ec_mac_key, b_ec_mac_key), pairing_output_mac_key, X) =
-            pairing::Table::random_mac_keypair_and_vec(rng);
+        // Sample `KAPPA_B` random `r`s
+        let mut rs = Box::new([Fr::ZERO; KAPPA_B]);
+        for r in rs.iter_mut() {
+            *r = Fr::rand(rng);
+        }
+
+        // Sample x uniformly at random
+        let x = Fr::rand(rng);
+        let a_ec_mac_key = a_ec_mac_key(rng, x);
+        let (b_ddh_mac_key, b_ec_mac_key) = b_mac_key(rng, x, *rs);
+
+        // Garbling table for the pairing e(A, B). It uses a_ec_mac_key,
+        // b_ec_mac_key as input MAC keys, and pairing_output_mac_key as the output
+        // MAC key.
+        let (pairing, pairing_output_mac_key) =
+            pairing::Table::garble(*rs, &(a_ec_mac_key.clone(), b_ddh_mac_key))?;
+
         let enc_s = {
             let hash_packed_phis = conditional_reveal::Table::<KAPPA_B>::hash_packed_phis(
                 pairing_output_mac_key.iter().map(|key| key.phi.clone()),
@@ -281,9 +308,9 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         // Construct c_ec_mac_key to use the same `phi`s as pairing_output_mac_key.
         // c_ec_mac_key is used as the output key for field_to_ec_mac of `C`
         let mut c_ec_mac_key = Vec::with_capacity(KAPPA_B);
-        pairing_output_mac_key
-            .iter()
-            .for_each(|key| c_ec_mac_key.push(EndoMacKey::random_from_phi(rng, &key.phi)));
+        pairing_output_mac_key.iter().for_each(|key| {
+            c_ec_mac_key.push(EndoMacKeyG1::random_from_phi(rng, &key.phi.clone().into()))
+        });
         // This unwrap cannot fail because `pairing_output_mac_key` is a fixed
         // array of `[EndoMacFq12Key; KAPPA_B]`.
         let c_ec_mac_key: [EndoMacKeyG1; KAPPA_B] =
@@ -331,7 +358,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
             // FIXME can we just borrow?
             let c_phis = pairing_output_mac_key
                 .iter()
-                .map(|key| key.phi.clone())
+                .map(|key| key.phi.clone().into())
                 .collect::<Vec<_>>()
                 .try_into()
                 .unwrap_or_else(|_| panic!());
@@ -352,11 +379,6 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
             };
             input_validity::Table::garble(parent_nonce, rng, &aux, input_mac_key)?
         };
-
-        // Garbling table for the pairing e(A, B). It uses a_ec_mac_key,
-        // b_ec_mac_key as input MAC keys, and pairing_output_mac_key as the output
-        // MAC key.
-        let pairing = pairing::Table::garble((X, pairing_output_mac_key.clone())).0;
 
         // Garbling table for the conditional revelation of `secret`.
         let conditional_reveal = {
@@ -415,26 +437,51 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
 
         // Compute the pairing e(A,B) e(C, H_1) on the MACs of A, B, C
         let conditional_reveal_macs = {
-            let b_ec_macs = [b_ec_mac.clone(), -b_ec_mac.clone()];
+            let to_ddh_mac = |ec_mac: &IteratedMac<Affine<g2::Config>, EndoMacG2, KAPPA_B>| {
+                let macs = ec_mac
+                    .iter()
+                    .enumerate()
+                    .map(|(i, mac)| {
+                        **mac
+                            - R_MUL_COFACTOR_GENERATOR.mul_bigint(
+                                BigInt::from(GENERATOR_EXPONENT)
+                                    .pow(i as u32)
+                                    .to_u64_digits()
+                                    .1,
+                            )
+                    })
+                    .collect::<Vec<_>>();
+                let macs = Projective::<g2::Config>::normalize_batch(&macs);
+
+                DDHMac(macs.try_into().unwrap())
+            };
+
             let prepared_c_ec_macs = [c_ec_mac.clone(), -c_ec_mac.clone()];
 
-            b_ec_macs
+            [to_ddh_mac(&b_ec_mac), to_ddh_mac(&-b_ec_mac)]
                 .iter()
-                .flat_map(|b_ec_mac| {
+                .flat_map(|b_ddh_mac| {
                     prepared_c_ec_macs
                         .iter()
-                        .map(move |c_ec_mac| (b_ec_mac.clone(), c_ec_mac.clone()))
+                        .map(move |c_ec_mac| (b_ddh_mac.clone(), c_ec_mac.clone()))
                 })
                 .par_bridge()
-                .map(|(b_ec_mac, c_ec_mac)| {
+                .map(|(b_ddh_mac, c_ec_mac)| {
                     // Evaluate the pairing of (A, B)
-                    let AB_mac = self
+                    let (_, AB_mac) = self
                         .pairing
-                        .evaluate(&(A.into(), B.into()), &(a_ec_mac.clone(), b_ec_mac.clone()))
-                        .1;
+                        .evaluate(&(A.into(), B.into()), &(a_ec_mac.clone(), b_ddh_mac))
+                        .unwrap();
 
                     let conditional_reveal_mac: Box<[EndoMacFq12; KAPPA_B]> = {
-                        let mut conditional_reveal_mac = Vec::with_capacity(KAPPA_B);
+                        let mut conditional_reveal_mac: Vec<
+                            crate::mac::endo::EndoMac<
+                                g2::Config,
+                                ark_ff::QuadExtField<
+                                    ark_ff::Fp12ConfigWrapper<ark_bn254::Fq12Config>,
+                                >,
+                            >,
+                        > = Vec::with_capacity(KAPPA_B);
                         (0..KAPPA_B).for_each(|idx| {
                             let AB = &AB_mac[idx];
                             let C = &c_ec_mac[idx];

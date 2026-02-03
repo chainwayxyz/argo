@@ -12,7 +12,7 @@ pub(crate) struct GroupMacKey<G: AdditiveGroup> {
 }
 
 #[derive(Deref, Debug, PartialEq, From)]
-pub(crate) struct GroupMac<G>(G);
+pub(crate) struct GroupMac<G>(pub(crate) G);
 
 impl<G> Mac<G::Scalar> for GroupMac<G>
 where

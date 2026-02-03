@@ -1,11 +1,11 @@
-use ark_bn254::{Fq, G2Affine, g2};
+use ark_bn254::{Fq, g2};
 use ark_ec::short_weierstrass::Affine;
 use ark_serialize::{
     CanonicalDeserialize, CanonicalSerialize, Compress, SerializationError, Valid, Validate,
 };
 
 use crate::{
-    garble::{g2_subgroup_check, groth16_verifier::KAPPA_B, pairing},
+    garble::{g2_subgroup_check, groth16_verifier::KAPPA_B},
     mac::{IteratedMac, Mac},
 };
 use std::fmt::Debug;
@@ -117,41 +117,6 @@ where
     M: Mac<Value> + Sync,
 {
     fn check(&self) -> Result<(), SerializationError> {
-        Ok(())
-    }
-}
-
-impl CanonicalSerialize for pairing::Table {
-    #[inline(never)]
-    fn serialize_with_mode<W: std::io::Write>(
-        &self,
-        mut writer: W,
-        compress: ark_serialize::Compress,
-    ) -> Result<(), ark_serialize::SerializationError> {
-        self.0.serialize_with_mode(&mut writer, compress)?;
-        Ok(())
-    }
-
-    fn serialized_size(&self, compress: ark_serialize::Compress) -> usize {
-        self.0.serialized_size(compress)
-    }
-}
-
-impl CanonicalDeserialize for pairing::Table {
-    #[inline(never)]
-    fn deserialize_with_mode<R: std::io::Read>(
-        mut reader: R,
-        compress: ark_serialize::Compress,
-        validate: ark_serialize::Validate,
-    ) -> Result<Self, ark_serialize::SerializationError> {
-        let X = deserialize_box_vec::<G2Affine, { KAPPA_B }, _>(&mut reader, compress, validate)?;
-
-        Ok(Self(X))
-    }
-}
-
-impl Valid for pairing::Table {
-    fn check(&self) -> Result<(), ark_serialize::SerializationError> {
         Ok(())
     }
 }
