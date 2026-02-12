@@ -140,8 +140,7 @@ impl Table {
 
         // This unwrap cannot fail since both `B_mac` and `self.0` are fixed
         // arrays of size `KAPPA_B`.
-        let output_mac: Box<[EndoMacFq12; KAPPA_B]> =
-            output_mac.try_into().unwrap_or_else(|_| panic!());
+        let output_mac: [EndoMacFq12; KAPPA_B] = output_mac.try_into().unwrap_or_else(|_| panic!());
 
         Ok((output.0, output_mac.into()))
     }

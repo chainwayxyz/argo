@@ -211,7 +211,7 @@ where
 
         // This unwrap cannot fail because both `self.t`, `self.s` are fixed
         // arrays of length `KAPPA`.
-        let output_mac: Box<[EndoMac<C, Affine<C>>; KAPPA]> =
+        let output_mac: [EndoMac<C, Affine<C>>; KAPPA] =
             output_mac.try_into().unwrap_or_else(|_| panic!());
 
         Ok(((self.point * input).into_affine(), output_mac.into()))

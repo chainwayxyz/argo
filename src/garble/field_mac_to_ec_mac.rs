@@ -287,7 +287,7 @@ where
             });
 
         // FIXME can this unwrap fail?
-        let macs: Box<[EndoMac<Config, Affine<Config>>; KAPPA]> =
+        let macs: [EndoMac<Config, Affine<Config>>; KAPPA] =
             macs.try_into().unwrap_or_else(|_| panic!());
 
         Ok((Affine::new_unchecked(input.x, input.y), macs.into()))

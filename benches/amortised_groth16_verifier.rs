@@ -1,5 +1,8 @@
 use argo::{
-    garble::groth16_verifier::{GID, InputMacKey, VerifierKey, garble_groth16},
+    garble::{
+        Circuit, Nonce,
+        groth16_verifier::{GID, Input, InputMacKey, VerifierKey, garble_groth16},
+    },
     mac::{MacKey, Random},
 };
 use ark_bn254::{Bn254, Fq, G1Affine, G2Affine};
@@ -47,6 +50,37 @@ fn amortised_garble(c: &mut Criterion) {
         })
     });
     garble_group.finish();
+
+    let input_mac_key = InputMacKey::random_key(&mut rng);
+    let table = {
+        let mut rng = StdRng::seed_from_u64(0);
+        let secret = Fq::rand(&mut rng);
+        let gid = GID::random(&mut rng);
+
+        garble_groth16(0, secret, verifier_key, &input_mac_key, gid).unwrap()
+    };
+
+    let mut eval_group = c.benchmark_group("amortised-eval");
+    eval_group.sample_size(10);
+    eval_group.bench_function("amortised_eval", |b| {
+        b.iter(|| {
+            let chunk_size = (N as usize).div_ceil(rayon::current_num_threads());
+            let input = Input::random(&mut rng);
+            let input_mac = input_mac_key.encode(&input);
+
+            (0..N)
+                .collect::<Vec<_>>()
+                .par_chunks(chunk_size)
+                .for_each(|seeds| {
+                    for &_ in seeds {
+                        table
+                            .evaluate(&mut Nonce::new(), &input, &input_mac)
+                            .unwrap();
+                    }
+                });
+        })
+    });
+    eval_group.finish();
 }
 
 criterion_group!(benches, amortised_garble);

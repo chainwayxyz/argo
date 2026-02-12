@@ -23,15 +23,18 @@ impl<G: GLVConfig + Clone, const KAPPA: usize> From<DDHMacKey<G, KAPPA>>
     fn from(val: DDHMacKey<G, KAPPA>) -> Self {
         let ks: Vec<_> = val.T.iter().map(|T| *T * val.a).collect();
         let ks = Projective::<G>::normalize_batch(&ks);
-        val.phis
-            .iter()
-            .zip(ks.iter())
-            .map(|(phi, &k)| EndoMacKey {
+
+        let mut endo_mac_keys = Vec::with_capacity(KAPPA);
+
+        val.phis.iter().zip(ks.iter()).for_each(|(phi, &k)| {
+            let endo_mac_key = EndoMacKey {
                 phi: phi.clone(),
                 k_scalar: None,
                 k,
-            })
-            .collect::<Vec<_>>()
+            };
+            endo_mac_keys.push(endo_mac_key);
+        });
+        endo_mac_keys
             .try_into()
             // This unwrap cannot fail because both `phis` and `ks` are of
             // length `KAPPA`.

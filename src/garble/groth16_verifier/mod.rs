@@ -25,7 +25,6 @@ use ark_std::{
 };
 use num_bigint::BigInt;
 use parking_lot::RwLock;
-use rayon::iter::{ParallelBridge, ParallelIterator};
 
 use crate::{
     garble::{
@@ -41,7 +40,7 @@ use crate::{
         IdentityMac, IdentityMacKey, IteratedMac, Mac, MacKey, RandomFromPhi,
         ddh::DDHMac,
         digit,
-        endo::{EndoMacFq12, EndoMacG2, EndoMacKeyG1},
+        endo::{EndoMacFq12, EndoMacG2, EndoMacKeyG1, EndoScalar},
     },
     utils::{
         constants::R_MUL_COFACTOR_GENERATOR,
@@ -153,6 +152,19 @@ pub struct Input {
     pub x: Fr,
 }
 
+impl Input {
+    pub fn random(rng: &mut StdRng) -> Self {
+        use ark_ff::UniformRand;
+
+        Input {
+            A: G1Affine::rand(rng).into(),
+            B: G2Affine::rand(rng).into(),
+            C: G1Affine::rand(rng).into(),
+            x: Fr::rand(rng),
+        }
+    }
+}
+
 /// Input MAC key from the Groth16 proof.
 #[derive(Clone)]
 pub struct InputMacKey {
@@ -206,14 +218,7 @@ impl Mac<Input> for InputMac {
 
     #[cfg(test)]
     fn random_input(rng: &mut StdRng) -> Input {
-        use ark_ff::UniformRand;
-
-        Input {
-            A: G1Affine::rand(rng).into(),
-            B: G2Affine::rand(rng).into(),
-            C: G1Affine::rand(rng).into(),
-            x: Fr::rand(rng),
-        }
+        Input::random(rng)
     }
 }
 
@@ -352,16 +357,16 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         let (x_G, x_G_output_mac_key) = {
             let input_mac_key = &input_mac_key.x;
 
-            // This unwrap cannot fail as `pairing_output_mac_key` is of length
-            // `KAPPA_B`.
-            // FIXME can we deep copy the pairing_output_mac_key array?
-            // FIXME can we just borrow?
-            let c_phis = pairing_output_mac_key
-                .iter()
-                .map(|key| key.phi.clone().into())
-                .collect::<Vec<_>>()
-                .try_into()
-                .unwrap_or_else(|_| panic!());
+            let mut c_phis = vec![EndoScalar::default(); KAPPA_B];
+            c_phis
+                .iter_mut()
+                .zip(pairing_output_mac_key.iter())
+                .for_each(|(endoscalar, key)| {
+                    *endoscalar = key.phi.clone().into();
+                });
+            // This unwrap cannot fail because `pairing_output_mac_key` is a
+            // fixed array of length `KAPPA_B`.
+            let c_phis = c_phis.try_into().unwrap_or_else(|_| panic!());
 
             scalar_mul::fixed::Table::garble(
                 parent_nonce,
@@ -438,72 +443,47 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         // Compute the pairing e(A,B) e(C, H_1) on the MACs of A, B, C
         let conditional_reveal_macs: Result<Vec<_>, EvalError> = {
             let to_ddh_mac = |ec_mac: &IteratedMac<Affine<g2::Config>, EndoMacG2, KAPPA_B>| {
-                let macs = ec_mac
-                    .iter()
-                    .enumerate()
-                    .map(|(i, mac)| {
-                        **mac
-                            - R_MUL_COFACTOR_GENERATOR.mul_bigint(
-                                BigInt::from(GENERATOR_EXPONENT)
-                                    .pow(i as u32)
-                                    .to_u64_digits()
-                                    .1,
-                            )
-                    })
-                    .collect::<Vec<_>>();
+                let mut macs = Vec::with_capacity(KAPPA_B);
+                for (i, mac) in ec_mac.iter().enumerate() {
+                    let mac = **mac
+                        - R_MUL_COFACTOR_GENERATOR.mul_bigint(
+                            BigInt::from(GENERATOR_EXPONENT)
+                                .pow(i as u32)
+                                .to_u64_digits()
+                                .1,
+                        );
+                    macs.push(mac);
+                }
                 let macs = Projective::<g2::Config>::normalize_batch(&macs);
-
-                // This unwrap cannot fail because `ec_mac` is a fixed array of
-                // length `KAPPA_B`
                 DDHMac(macs.try_into().unwrap())
             };
 
+            let b_ddh_macs = [to_ddh_mac(&b_ec_mac), to_ddh_mac(&-b_ec_mac)];
             let prepared_c_ec_macs = [c_ec_mac.clone(), -c_ec_mac.clone()];
 
-            [to_ddh_mac(&b_ec_mac), to_ddh_mac(&-b_ec_mac)]
-                .iter()
-                .flat_map(|b_ddh_mac| {
-                    prepared_c_ec_macs
-                        .iter()
-                        .map(move |c_ec_mac| (b_ddh_mac.clone(), c_ec_mac.clone()))
-                })
-                .par_bridge()
-                .map(|(b_ddh_mac, c_ec_mac)| -> Result<IteratedMac<Fq12, EndoMacFq12, KAPPA_B>, EvalError> {
-                    // Evaluate the pairing of (A, B)
-                    let (_, AB_mac) = self
-                        .pairing
-                        .evaluate(&(A.into(), B.into()), &(a_ec_mac.clone(), b_ddh_mac))?;
+            let mut results = Vec::with_capacity(4); // 2 * 2 = 4 combinations
 
-                    let conditional_reveal_mac: Box<[EndoMacFq12; KAPPA_B]> = {
-                        let mut conditional_reveal_mac: Vec<
-                            crate::mac::endo::EndoMac<
-                                g2::Config,
-                                ark_ff::QuadExtField<
-                                    ark_ff::Fp12ConfigWrapper<ark_bn254::Fq12Config>,
-                                >,
-                            >,
-                        > = Vec::with_capacity(KAPPA_B);
-                        (0..KAPPA_B).for_each(|idx| {
+            for b_ddh_mac in &b_ddh_macs {
+                for c_ec_mac in &prepared_c_ec_macs {
+                    let (_, AB_mac) = self.pairing.evaluate(
+                        &(A.into(), B.into()),
+                        &(a_ec_mac.clone(), b_ddh_mac.clone()),
+                    )?;
+
+                    let conditional_reveal_mac: [EndoMacFq12; KAPPA_B] =
+                        std::array::from_fn(|idx| {
                             let AB = &AB_mac[idx];
                             let C = &c_ec_mac[idx];
                             let x_G = &x_G_mac[idx];
-
                             let pairing = Bn254::multi_pairing([**C, **x_G], [H1, H2]);
-
-                            let mac = (pairing.0 * **AB).into();
-                            conditional_reveal_mac.push(mac);
+                            (pairing.0 * **AB).into()
                         });
-                        // This unwrap cannot fail as `conditional_reveal_mac`
-                        // was constructed over a loop 0..KAPPA_B.
-                        conditional_reveal_mac
-                            .try_into()
-                            .unwrap_or_else(|_| panic!())
-                    };
 
-                    let mac: IteratedMac<Fq12, EndoMacFq12, KAPPA_B> =
-                        conditional_reveal_mac.into();
-                Ok(mac)
-                }).collect()
+                    results.push(conditional_reveal_mac.into());
+                }
+            }
+
+            Ok(results)
         };
 
         // Evaluate the conditional reveal circuit.

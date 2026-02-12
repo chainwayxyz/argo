@@ -61,15 +61,21 @@ pub trait Encrypt<H: Hash, Message> {
     ) -> Result<Message, EvalError>;
 }
 
-#[derive(Deref, Clone)]
-pub struct IteratedMac<Value, M: Mac<Value>, const N: usize> {
+#[derive(Deref, Clone, CanonicalDeserialize, CanonicalSerialize)]
+pub struct IteratedMac<Value, M, const N: usize>
+where
+    Value: Sync + Send,
+    M: Mac<Value> + CanonicalDeserialize + CanonicalSerialize,
+{
     #[deref]
-    pub(crate) value: Box<[M; N]>,
+    pub(crate) value: [M; N],
     _marker: PhantomData<Value>,
 }
 
-impl<Value, M: Mac<Value> + Clone + Neg<Output = M>, const N: usize> Neg
-    for IteratedMac<Value, M, N>
+impl<Value, M, const N: usize> Neg for IteratedMac<Value, M, N>
+where
+    Value: Sync + Send,
+    M: Mac<Value> + Clone + Neg<Output = M> + CanonicalDeserialize + CanonicalSerialize,
 {
     type Output = Self;
 
@@ -83,8 +89,12 @@ impl<Value, M: Mac<Value> + Clone + Neg<Output = M>, const N: usize> Neg
     }
 }
 
-impl<Value, M: Mac<Value>, const N: usize> From<Box<[M; N]>> for IteratedMac<Value, M, N> {
-    fn from(value: Box<[M; N]>) -> Self {
+impl<Value, M, const N: usize> From<[M; N]> for IteratedMac<Value, M, N>
+where
+    Value: Sync + Send,
+    M: Mac<Value> + CanonicalDeserialize + CanonicalSerialize,
+{
+    fn from(value: [M; N]) -> Self {
         Self {
             value,
             _marker: PhantomData,
@@ -94,7 +104,8 @@ impl<Value, M: Mac<Value>, const N: usize> From<Box<[M; N]>> for IteratedMac<Val
 
 impl<Value, M, const N: usize> PartialEq for IteratedMac<Value, M, N>
 where
-    M: PartialEq + Mac<Value>,
+    Value: Sync + Send,
+    M: PartialEq + Mac<Value> + CanonicalDeserialize + CanonicalSerialize,
 {
     fn eq(&self, other: &Self) -> bool {
         self.value == other.value
@@ -105,9 +116,9 @@ where
 impl<BaseValue, BaseMac, BaseMacKey, const KAPPA: usize> Mac<BaseValue>
     for IteratedMac<BaseValue, BaseMac, KAPPA>
 where
-    BaseValue: PartialEq + Clone,
-    BaseMac: Mac<BaseValue, Key = BaseMacKey> + Clone,
-    BaseMacKey: MacKey<BaseValue, BaseMac> + Clone,
+    BaseValue: PartialEq + Clone + Send + Sync,
+    BaseMac: Mac<BaseValue, Key = BaseMacKey> + Clone + CanonicalDeserialize + CanonicalSerialize,
+    BaseMacKey: MacKey<BaseValue, BaseMac> + Clone + Send + Sync,
 {
     type Key = [BaseMacKey; KAPPA];
 
@@ -120,9 +131,9 @@ where
 impl<BaseValue, BaseMac, BaseMacKey, const KAPPA: usize>
     MacKey<BaseValue, IteratedMac<BaseValue, BaseMac, KAPPA>> for [BaseMacKey; KAPPA]
 where
-    BaseMacKey: MacKey<BaseValue, BaseMac>,
-    BaseMac: Mac<BaseValue> + Clone,
-    BaseValue: PartialEq + Clone,
+    BaseMacKey: MacKey<BaseValue, BaseMac> + Send + Sync,
+    BaseMac: Mac<BaseValue> + Clone + CanonicalDeserialize + CanonicalSerialize,
+    BaseValue: PartialEq + Clone + Send + Sync,
 {
     fn encode(&self, value: &BaseValue) -> IteratedMac<BaseValue, BaseMac, KAPPA> {
         let mut macs = Vec::with_capacity(KAPPA);
@@ -131,7 +142,7 @@ where
 
         // This unwrap cannot fail because `macs` was constructed by iterating
         // over a fixed array [BaseMacKey; KAPPA].
-        let macs: Box<[BaseMac; KAPPA]> = macs.try_into().unwrap_or_else(|_| panic!());
+        let macs: [BaseMac; KAPPA] = macs.try_into().unwrap_or_else(|_| panic!());
 
         IteratedMac::from(macs)
     }
