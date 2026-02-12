@@ -33,6 +33,8 @@ impl<G: GLVConfig + Clone, const KAPPA: usize> From<DDHMacKey<G, KAPPA>>
             })
             .collect::<Vec<_>>()
             .try_into()
+            // This unwrap cannot fail because both `phis` and `ks` are of
+            // length `KAPPA`.
             .unwrap_or_else(|_| panic!())
     }
 }

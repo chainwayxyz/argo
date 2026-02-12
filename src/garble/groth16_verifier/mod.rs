@@ -436,7 +436,7 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
         let conditional_reveal_input = self.verifier_key.pairing(input);
 
         // Compute the pairing e(A,B) e(C, H_1) on the MACs of A, B, C
-        let conditional_reveal_macs = {
+        let conditional_reveal_macs: Result<Vec<_>, EvalError> = {
             let to_ddh_mac = |ec_mac: &IteratedMac<Affine<g2::Config>, EndoMacG2, KAPPA_B>| {
                 let macs = ec_mac
                     .iter()
@@ -453,6 +453,8 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
                     .collect::<Vec<_>>();
                 let macs = Projective::<g2::Config>::normalize_batch(&macs);
 
+                // This unwrap cannot fail because `ec_mac` is a fixed array of
+                // length `KAPPA_B`
                 DDHMac(macs.try_into().unwrap())
             };
 
@@ -466,12 +468,11 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
                         .map(move |c_ec_mac| (b_ddh_mac.clone(), c_ec_mac.clone()))
                 })
                 .par_bridge()
-                .map(|(b_ddh_mac, c_ec_mac)| {
+                .map(|(b_ddh_mac, c_ec_mac)| -> Result<IteratedMac<Fq12, EndoMacFq12, KAPPA_B>, EvalError> {
                     // Evaluate the pairing of (A, B)
                     let (_, AB_mac) = self
                         .pairing
-                        .evaluate(&(A.into(), B.into()), &(a_ec_mac.clone(), b_ddh_mac))
-                        .unwrap();
+                        .evaluate(&(A.into(), B.into()), &(a_ec_mac.clone(), b_ddh_mac))?;
 
                     let conditional_reveal_mac: Box<[EndoMacFq12; KAPPA_B]> = {
                         let mut conditional_reveal_mac: Vec<
@@ -501,14 +502,13 @@ impl Circuit<Input, InputMac, Output, IdentityMac<Output>> for Table {
 
                     let mac: IteratedMac<Fq12, EndoMacFq12, KAPPA_B> =
                         conditional_reveal_mac.into();
-                    mac
-                })
-                .collect::<Vec<_>>()
+                Ok(mac)
+                }).collect()
         };
 
         // Evaluate the conditional reveal circuit.
         self.conditional_reveal
-            .evaluate(&conditional_reveal_input, &conditional_reveal_macs)
+            .evaluate(&conditional_reveal_input, &conditional_reveal_macs?)
             .map(|result| (result, IdentityMac(PhantomData)))
     }
 }

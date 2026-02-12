@@ -205,7 +205,11 @@ pub(crate) fn b_mac_key(
     // This is a DDHMacKey
     // scalar is x, public vector is [r_i]G
     let ddh_mac_key = DDHMacKey {
+        // This unwrap cannot fail since `rs` is a fixed array of
+        // length `KAPPA_B`.
         T: G2Projective::generator().batch_mul(&rs).try_into().unwrap(),
+        // This unwrap cannot fail since `B_phis` is a vector of
+        // length `KAPPA_B`.
         phis: B_phis.clone().try_into().unwrap_or_else(|_| panic!()),
         a: -x,
     };

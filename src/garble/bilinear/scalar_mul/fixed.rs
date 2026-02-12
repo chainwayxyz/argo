@@ -101,10 +101,12 @@ where
                 })
             });
 
-        // This unwrap cannot fail since these were constructed from arrays of
-        // length `KAPPA`.
         (
+            // This unwrap cannot fail since `t` was constructed from arrays of
+            // length `KAPPA`.
             t.try_into().unwrap_or_else(|_| panic!()),
+            // This unwrap cannot fail since `keys` was constructed from arrays of
+            // length `KAPPA`.
             keys.try_into().unwrap_or_else(|_| panic!()),
         )
     }
