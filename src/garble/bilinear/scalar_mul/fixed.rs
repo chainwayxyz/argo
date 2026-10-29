@@ -7,7 +7,8 @@ use ark_ec::{
 };
 use ark_ff::Field;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use ark_std::{UniformRand, rand::rngs::StdRng};
+use ark_std::UniformRand;
+use rand_core::CryptoRngCore;
 
 use crate::{
     garble::{Circuit, Nonce, bit_adaptor},
@@ -58,13 +59,19 @@ where
 impl<C, const KAPPA: usize> Table<C, KAPPA>
 where
     C: GLVConfig + Clone,
-    C::ScalarField: Random,
+    C::ScalarField: Random + NumBits,
     <C::ScalarField as Field>::BasePrimeField: FromLeBytesModOrder,
 {
+    /// Whether there is one well-formed adaptor per bit of the scalar.
+    pub(crate) fn has_garbled_shape(&self) -> bool {
+        self.adaptors.len() == C::ScalarField::NUM_BITS
+            && self.adaptors.iter().all(|table| table.has_garbled_shape())
+    }
+
     /// Derives an `OutputMacKey: [EndoMacKey; KAPPA]` given an input_mac_key
     /// and an array of `phi`s
     pub(crate) fn output_mac_key_from_phis(
-        rng: &mut StdRng,
+        rng: &mut impl CryptoRngCore,
         input_mac_key: &GroupMacKey<C::ScalarField>,
         phis: &[EndoScalar<C>; KAPPA],
     ) -> ([Affine<C>; KAPPA], OutputMacKey<C, KAPPA>) {
@@ -124,7 +131,7 @@ where
 
     fn garble(
         parent_nonce: &mut Nonce,
-        rng: &mut StdRng,
+        rng: &mut impl CryptoRngCore,
         aux: Option<Self::Aux>,
         input_mac_key: &InputMacKey<C>,
     ) -> Result<(Self, OutputMacKey<C, KAPPA>), GarbleError> {
@@ -132,7 +139,7 @@ where
             type_name::<Self::Aux>(),
             type_name::<Self>(),
         ))?;
-        let mut nonce = parent_nonce.fork();
+        let mut nonce = parent_nonce.fork()?;
 
         // Adaptor tables for the scalar
         let mut adaptors = Vec::with_capacity(input_mac_key.len());
@@ -187,7 +194,7 @@ where
         input: &Input<C>,
         input_mac: &InputMac<C>,
     ) -> Result<(Output<C>, OutputMac<C, KAPPA>), EvalError> {
-        let mut nonce = parent_nonce.fork();
+        let mut nonce = parent_nonce.fork()?;
 
         let mut adapted_input_mac = Vec::with_capacity(self.adaptors.len());
 
@@ -207,12 +214,7 @@ where
         let input_mac = input_mac.try_into_group_mac()?;
 
         //   [input_mac] t + [input] s
-        let output_mac = self.bilinear_table.evaluate(input, &input_mac, &self.s);
-
-        // This unwrap cannot fail because both `self.t`, `self.s` are fixed
-        // arrays of length `KAPPA`.
-        let output_mac: [EndoMac<C, Affine<C>>; KAPPA] =
-            output_mac.try_into().unwrap_or_else(|_| panic!());
+        let output_mac = self.bilinear_table.evaluate(input, &input_mac, &self.s)?;
 
         Ok(((self.point * input).into_affine(), output_mac.into()))
     }
@@ -224,7 +226,7 @@ fn test_scalar_mul_fixed() {
         garble::groth16_verifier::KAPPA_B, mac::MacKey, utils::aes_hash::aes_ctr::clear_set,
     };
     use ark_bn254::{Fr, G1Projective, g1::Config};
-    use ark_std::rand::SeedableRng;
+    use ark_std::rand::{SeedableRng, rngs::StdRng};
     use std::ops::Mul;
 
     const SEED: u64 = 0;
@@ -250,6 +252,7 @@ fn test_scalar_mul_fixed() {
     )
     .unwrap();
     clear_set();
+    assert!(circuit.has_garbled_shape());
 
     let expected_output_mac = output_mac_key.encode(&point.mul(input).into_affine());
 

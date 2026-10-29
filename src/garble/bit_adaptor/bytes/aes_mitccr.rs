@@ -4,7 +4,7 @@
 
 use std::any::type_name;
 
-use ark_std::rand::rngs::StdRng;
+use rand_core::CryptoRngCore;
 
 use crate::{
     garble::{
@@ -109,6 +109,10 @@ pub(crate) struct Aux {
 }
 
 impl Table<AesMiTCCR, Bit16ByteMac, Bit16ByteMac> {
+    pub(crate) fn has_garbled_shape(&self, gid: &GID) -> bool {
+        self.gid == Some(*gid)
+    }
+
     pub(crate) fn derive_dst(gid: &GID, nonce: &Nonce) -> [u8; 16] {
         let mut dst = [0; AES_BLOCK_SIZE];
         dst.iter_mut()
@@ -128,7 +132,7 @@ impl Circuit<bool, Bit16ByteMac, bool, Bit16ByteMac>
 
     fn garble(
         parent_nonce: &mut Nonce,
-        _rng: &mut StdRng,
+        _rng: &mut impl CryptoRngCore,
         aux: Option<Self::Aux>,
         input_mac_key: &Bit16ByteMacKey,
     ) -> Result<(Self, Bit16ByteMacKey), GarbleError> {
@@ -211,7 +215,7 @@ impl Circuit<bool, Bit16ByteMac, bool, Bit16ByteMac>
 
 #[test]
 fn test_aes_mitccr_bytes_to_bytes_adaptor() {
-    use ark_std::rand::SeedableRng;
+    use ark_std::rand::{SeedableRng, rngs::StdRng};
 
     use crate::{
         mac::{Mac, MacKey, Random},
@@ -241,6 +245,7 @@ fn test_aes_mitccr_bytes_to_bytes_adaptor() {
             .unwrap();
         aes_mitccr_clear_set();
         super::super::clear_set();
+        assert!(garbling_table.has_garbled_shape(&gid));
 
         let input = Bit16ByteMac::random_input(&mut rng);
         let input_mac = input_mac_key.encode(&input);

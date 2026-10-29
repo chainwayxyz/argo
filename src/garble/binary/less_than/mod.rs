@@ -23,7 +23,6 @@ use std::{any::type_name, marker::PhantomData};
 use ark_bn254::Fq;
 use ark_ff::{BigInteger, PrimeField};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use ark_std::rand::RngCore;
 
 #[cfg(test)]
 use ark_bn254::Fr;
@@ -68,11 +67,11 @@ where
 
     fn garble(
         parent_nonce: &mut crate::garble::Nonce,
-        rng: &mut ark_std::rand::prelude::StdRng,
+        rng: &mut impl rand_core::CryptoRngCore,
         aux: Option<Self::Aux>,
         input_mac_key: &DigitMacKey<F>,
     ) -> Result<(Self, IdentityMacKey), GarbleError> {
-        let mut nonce = parent_nonce.fork();
+        let mut nonce = parent_nonce.fork()?;
         let (secret, gid) = aux
             .ok_or_else(|| GarbleError::AuxError(type_name::<Self::Aux>(), type_name::<Self>()))?;
 
@@ -115,7 +114,7 @@ where
 
         let enc_s = {
             let mac_false = output_mac_key.encode(&false);
-            let pad: Fq = AesCtr::hash_to_field(*mac_false, &nonce);
+            let pad: Fq = AesCtr::hash_to_field(*mac_false, &nonce)?;
 
             secret + pad
         };
@@ -139,10 +138,35 @@ where
         input: &F,
         input_mac: &DigitMac<F>,
     ) -> Result<(Fq, IdentityMac<Fq>), EvalError> {
-        let mut nonce = parent_nonce.fork();
+        let secret = self.evaluate_bits(parent_nonce, &input.to_bits(), input_mac)?;
+        Ok((secret, IdentityMac(PhantomData)))
+    }
+}
+
+impl<F> Table<F>
+where
+    F: PrimeField + FromBits<F, F> + Random + ToBits + NumBits,
+{
+    /// Whether there is one adaptor and one gate per bit of `F`, all for `gid`.
+    pub(crate) fn has_garbled_shape(&self, gid: &GID) -> bool {
+        self.gid == *gid
+            && self.adaptors.len() == F::NUM_BITS
+            && self.adaptors.iter().all(|table| table.has_garbled_shape())
+            && self.gates.len() == F::NUM_BITS
+            && self.gates.iter().all(|gate| gate.has_garbled_shape(gid))
+    }
+
+    /// Evaluates on raw input bits, which may spell a value at or above the
+    /// modulus that no `F` can hold.
+    pub(crate) fn evaluate_bits(
+        &self,
+        parent_nonce: &mut crate::garble::Nonce,
+        input_bits: &[bool],
+        input_mac: &DigitMac<F>,
+    ) -> Result<Fq, EvalError> {
+        let mut nonce = parent_nonce.fork()?;
 
         let p_bits = F::MODULUS.to_bits_le();
-        let input_bits = input.to_bits();
 
         let mut x_mac = Vec::with_capacity(input_bits.len());
         for ((adaptor, input), input_mac) in self
@@ -176,12 +200,8 @@ where
             output_mac = res_mac;
         }
 
-        let secret = {
-            let pad: Fq = AesCtr::hash_to_field(*output_mac, &nonce);
-            self.enc_s - pad
-        };
-
-        Ok((secret, IdentityMac(PhantomData)))
+        let pad: Fq = AesCtr::hash_to_field(*output_mac, &nonce)?;
+        Ok(self.enc_s - pad)
     }
 }
 
@@ -218,6 +238,8 @@ where
     aes_ctr_clear_set();
     aes_mitccr_clear_set();
     bit_adaptor_clear_set();
+    assert!(table.has_garbled_shape(&gid));
+    assert!(!table.has_garbled_shape(&[0; 16]));
 
     let output = table
         .evaluate(&mut Nonce::new(), input, &input_mac)

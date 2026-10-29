@@ -1,12 +1,12 @@
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 #[cfg(test)]
 use ark_std::rand::Rng;
-use ark_std::rand::RngCore;
 
 use crate::{
     garble::{
         Circuit, Nonce,
         binary::{and, xor},
+        groth16_verifier::GID,
     },
     mac::{
         Mac, MacKey, RandomFromPhi,
@@ -27,6 +27,12 @@ pub(crate) struct Table {
     xp_ap: and::Table,
     // xp_ap XOR a
     output: xor::Table,
+}
+
+impl Table {
+    pub(crate) fn has_garbled_shape(&self, gid: &GID) -> bool {
+        self.xp_ap.has_garbled_shape(gid)
+    }
 }
 
 #[derive(Debug)]
@@ -60,7 +66,7 @@ impl Mac<Input> for InputMac {
     type Key = InputMacKey;
 
     #[cfg(test)]
-    fn random_input(rng: &mut ark_std::rand::prelude::StdRng) -> Input {
+    fn random_input(rng: &mut impl rand_core::CryptoRngCore) -> Input {
         Input {
             x: rng.gen_bool(0.5),
             p: rng.gen_bool(0.5),
@@ -87,7 +93,7 @@ impl MacKey<Input, InputMac> for InputMacKey {
         }
     }
 
-    fn random_key(rng: &mut ark_std::rand::prelude::StdRng) -> Self {
+    fn random_key(rng: &mut impl rand_core::CryptoRngCore) -> Self {
         let mut phi = [0; 16];
         rng.fill_bytes(&mut phi);
         Self {
@@ -103,11 +109,11 @@ impl Circuit<Input, InputMac, bool, Bit16ByteMac> for Table {
 
     fn garble(
         parent_nonce: &mut Nonce,
-        rng: &mut ark_std::rand::prelude::StdRng,
+        rng: &mut impl rand_core::CryptoRngCore,
         aux: Option<Self::Aux>,
         input_mac_key: &<InputMac as Mac<Input>>::Key,
     ) -> Result<(Self, <Bit16ByteMac as Mac<bool>>::Key), GarbleError> {
-        let mut nonce = parent_nonce.fork();
+        let mut nonce = parent_nonce.fork()?;
 
         // (x + p)
         let (x_p, xp_output_mac_key) = {
@@ -165,7 +171,7 @@ impl Circuit<Input, InputMac, bool, Bit16ByteMac> for Table {
         input: &Input,
         input_mac: &InputMac,
     ) -> Result<(bool, Bit16ByteMac), EvalError> {
-        let mut nonce = parent_nonce.fork();
+        let mut nonce = parent_nonce.fork()?;
 
         let (x_p, xp_mac) = {
             let input = BinaryInput::new(input.x, input.p);
@@ -199,9 +205,7 @@ impl Circuit<Input, InputMac, bool, Bit16ByteMac> for Table {
 
 #[test]
 fn test_gate() {
-    use crate::{
-        garble::groth16_verifier::GID, mac::Random, utils::aes_hash::aes_mitccr::clear_set,
-    };
+    use crate::{mac::Random, utils::aes_hash::aes_mitccr::clear_set};
     use ark_std::rand::{SeedableRng, rngs::StdRng};
 
     const SEED: u64 = 0;
@@ -219,6 +223,7 @@ fn test_gate() {
         let (circuit, output_mac_key) =
             Table::garble(&mut Nonce::new(), &mut rng, Some(gid), &input_mac_key).unwrap();
         clear_set();
+        assert!(circuit.has_garbled_shape(&gid));
 
         let output_mac = circuit
             .evaluate(&mut Nonce::new(), &input, &input_mac)

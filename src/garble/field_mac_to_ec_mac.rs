@@ -9,22 +9,21 @@ use std::any::type_name;
 
 #[cfg(test)]
 use crate::garble::groth16_verifier::{KAPPA_A, KAPPA_B};
-#[cfg(test)]
-use ark_bn254::Fq;
 
+use ark_bn254::Fq;
 use ark_ec::{AffineRepr, scalar_mul::glv::GLVConfig, short_weierstrass::Affine};
 use ark_ff::{Field, batch_inversion};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use ark_std::rand::rngs::StdRng;
+use rand_core::CryptoRngCore;
 
 use crate::{
     garble::{
         Circuit, Nonce,
-        bivariate::{self, Input, InputMac, InputMacKey, Poly},
+        bivariate::{self, Input, InputMac, InputMacKey, Monomial, Poly},
     },
     mac::{
-        Random, RandomFromPhi,
-        endo::{EndoMac, EndoMacKey, IteratedEndoMac, PSqModR},
+        MacKey, Random, RandomFromPhi,
+        endo::{Endo, EndoMac, EndoMacKey, EndoScalar, IteratedEndoMac, PSqModR},
     },
     utils::{
         bits::{FromBits, NumBits, ToBits},
@@ -49,6 +48,90 @@ where
     pub(crate) x: Vec<bivariate::Table<C::BaseField>>,
     pub(crate) y: Option<Vec<bivariate::Table<C::BaseField>>>,
     pub(crate) z: Vec<bivariate::Table<C::BaseField>>,
+    // Per replica, the secret encrypted under the input labels of
+    // phi^{-1}(K), the one input where the chord formula yields (0, 0, 0).
+    pub(crate) doubling: Vec<[u8; 48]>,
+}
+
+/// Monomials of the polynomials `garble` builds for X, Y and Z, in the order
+/// [1, X, Y, X^2, XY, Y^2] of `Poly::biquadratic`.
+const X_MONOMIALS: [Monomial; 4] = [
+    Monomial::constant(),
+    Monomial::new(1, 0),
+    Monomial::new(0, 1),
+    Monomial::new(2, 0),
+];
+const Y_MONOMIALS: [Monomial; 5] = [
+    Monomial::constant(),
+    Monomial::new(0, 1),
+    Monomial::new(2, 0),
+    Monomial::new(1, 1),
+    Monomial::new(0, 2),
+];
+const Z_MONOMIALS: [Monomial; 2] = [Monomial::constant(), Monomial::new(1, 0)];
+
+/// Hash of the labels of every input bit, which only the evaluator holding
+/// those labels can compute.
+fn label_digest<F>(input_mac: &InputMac<F>) -> blake3::Hash {
+    let mut hasher = blake3::Hasher::new_derive_key("argo field_mac_to_ec_mac doubling v1");
+    for label in input_mac.x.iter().chain(input_mac.y.iter()) {
+        hasher.update(&label.0);
+    }
+    hasher.finalize()
+}
+
+fn apply_doubling_pad(bytes: &mut [u8; 48], labels: &blake3::Hash, replica: usize) {
+    let mut hasher = blake3::Hasher::new_keyed(labels.as_bytes());
+    hasher.update(&(replica as u64).to_le_bytes());
+    let mut pad = [0; 48];
+    hasher.finalize_xof().fill(&mut pad);
+    bytes
+        .iter_mut()
+        .zip(pad)
+        .for_each(|(byte, pad)| *byte ^= pad);
+}
+
+impl<C, const KAPPA: usize> Table<C, KAPPA>
+where
+    C: GLVConfig,
+    C::BaseField: Field + NumBits + FromBits<bool, C::BaseField> + Random,
+    <C::BaseField as Field>::BasePrimeField: FromLeBytesModOrder,
+{
+    /// Whether this is the shape `garble` gives `KAPPA` replicas, with Y
+    /// tables exactly when `is_full`.
+    pub(crate) fn has_garbled_shape(&self, is_full: bool) -> bool {
+        let replicas = |tables: &[bivariate::Table<C::BaseField>], monomials: &[Monomial]| {
+            tables.len() == KAPPA
+                && tables
+                    .iter()
+                    .all(|table| table.has_garbled_shape(monomials))
+        };
+        self.is_full == is_full
+            && replicas(&self.x, &X_MONOMIALS)
+            && replicas(&self.z, &Z_MONOMIALS)
+            && match &self.y {
+                Some(y) => is_full && replicas(y, &Y_MONOMIALS),
+                None => !is_full,
+            }
+            && self.doubling.len() == KAPPA
+    }
+
+    /// Returns the secret if `input_mac` holds the labels of some replica's
+    /// doubling input, for which the converted MAC would be meaningless.
+    pub(crate) fn reveal(&self, input_mac: &InputMac<C::BaseField>) -> Option<Fq> {
+        let labels = label_digest(input_mac);
+        self.doubling
+            .iter()
+            .enumerate()
+            .find_map(|(replica, ciphertext)| {
+                let mut plaintext = *ciphertext;
+                apply_doubling_pad(&mut plaintext, &labels, replica);
+                if plaintext[32..] != [0; 16] {
+                    return None;
+                }
+                Fq::deserialize_compressed(&plaintext[..32]).ok()
+            })
+    }
 }
 
 impl<Config, F, const KAPPA: usize>
@@ -62,21 +145,21 @@ where
     EndoMacKey<Config, Affine<Config>>:
         RandomFromPhi<Affine<Config>, EndoMac<Config, Affine<Config>>>,
 {
-    type Aux = (bool, OutputMacKey<Config, KAPPA>);
+    type Aux = (bool, OutputMacKey<Config, KAPPA>, Fq);
 
     /// # Panics
     ///
     /// Panics if Config::COEFF_A is nonzero.
     fn garble(
         parent_nonce: &mut Nonce,
-        rng: &mut StdRng,
+        rng: &mut impl CryptoRngCore,
         aux: Option<Self::Aux>,
         input_mac_key: &InputMacKey<F>,
     ) -> Result<(Self, OutputMacKey<Config, KAPPA>), GarbleError> {
         assert_eq!(Config::COEFF_A, F::ZERO);
 
-        let mut nonce = parent_nonce.fork();
-        let (is_full, output_mac_key) = aux
+        let mut nonce = parent_nonce.fork()?;
+        let (is_full, output_mac_key, secret) = aux
             .ok_or_else(|| GarbleError::AuxError(type_name::<Self::Aux>(), type_name::<Self>()))?;
 
         fn x_aux<C, F>(mac_key: &EndoMacKey<C, Affine<C>>, a2: F) -> Result<Poly<F>, GarbleError>
@@ -184,8 +267,9 @@ where
         let mut x = Vec::with_capacity(output_mac_key.len());
         let mut y = Vec::with_capacity(output_mac_key.len());
         let mut z = Vec::with_capacity(output_mac_key.len());
+        let mut doubling = Vec::with_capacity(output_mac_key.len());
 
-        for key in output_mac_key.iter() {
+        for (replica, key) in output_mac_key.iter().enumerate() {
             // Generate random scalar `a`
             let a = F::rand(rng);
 
@@ -213,6 +297,23 @@ where
                 .0;
                 y.push(y_table);
             }
+
+            // Only the holder of phi^{-1}(K)'s labels can decrypt `secret`.
+            let doubling_input = EndoScalar::<Config>::iter()
+                .into_iter()
+                .take(6)
+                .map(|inverse| inverse.endo(key.k))
+                .find(|point| key.phi.endo(*point) == key.k);
+            let mut ciphertext = [0; 48];
+            match doubling_input {
+                Some(point) => {
+                    secret.serialize_compressed(&mut ciphertext[..32]).unwrap();
+                    let labels = label_digest(&input_mac_key.encode(&point.into()));
+                    apply_doubling_pad(&mut ciphertext, &labels, replica);
+                }
+                None => rng.fill_bytes(&mut ciphertext),
+            }
+            doubling.push(ciphertext);
         }
 
         Ok((
@@ -221,6 +322,7 @@ where
                 x,
                 y: if is_full { Some(y) } else { None },
                 z,
+                doubling,
             },
             output_mac_key.clone(),
         ))
@@ -232,7 +334,7 @@ where
         input: &Input<Config::BaseField>,
         input_mac: &InputMac<Config::BaseField>,
     ) -> Result<(Affine<Config>, OutputMac<Config, KAPPA>), EvalError> {
-        let mut nonce = parent_nonce.fork();
+        let mut nonce = parent_nonce.fork()?;
 
         let mut xs = Vec::with_capacity(self.x.len());
         let mut ys = if self.is_full {
@@ -242,10 +344,10 @@ where
         };
         let mut zs = Vec::with_capacity(self.z.len());
 
-        let y = if self.is_full {
-            self.y.as_ref().ok_or(EvalError::MissingYTablesError)?
-        } else {
-            &vec![]
+        let y: &[_] = match (&self.y, self.is_full) {
+            (Some(y), true) => y,
+            (None, false) => &[],
+            _ => return Err(EvalError::MissingYTablesError),
         };
 
         for (idx, (x_table, z_table)) in self.x.iter().zip(self.z.iter()).enumerate() {
@@ -256,39 +358,49 @@ where
             xs.push(x_table);
 
             if self.is_full {
-                let y_table = y[idx].evaluate(&mut nonce, input, input_mac)?.0;
-                ys.push(y_table);
+                let y_table = y.get(idx).ok_or(EvalError::MissingYTablesError)?;
+                ys.push(y_table.evaluate(&mut nonce, input, input_mac)?.0);
             }
         }
 
         let mut zs_inv = zs;
         batch_inversion(&mut zs_inv);
 
+        // Z = 0 exactly when phi(P) = -K, whose sum is the identity, or when
+        // phi(P) = K, where X = 0 too and only `reveal` is meaningful.
+        if xs
+            .iter()
+            .zip(&zs_inv)
+            .any(|(x, z_inv)| x.is_zero() && z_inv.is_zero())
+        {
+            return Err(EvalError::DoublingInput);
+        }
+
         let mut macs = Vec::with_capacity(KAPPA);
-        xs.into_iter()
-            .zip(zs_inv)
-            .enumerate()
-            .for_each(|(idx, (x, z_inv))| {
-                // Use Jacobian coordinates, so x / z^2, y / z^3
-                let z2 = z_inv.square();
-                let x = x * z2;
+        for (idx, (x, z_inv)) in xs.into_iter().zip(zs_inv).enumerate() {
+            if z_inv.is_zero() {
+                macs.push(EndoMac::from(Affine::identity()));
+                continue;
+            }
+            // Use Jacobian coordinates, so x / z^2, y / z^3
+            let z2 = z_inv.square();
+            let x = x * z2;
 
-                let y = if self.is_full {
-                    ys[idx] * z_inv * z2
-                } else {
-                    // y^2 = x^3 + b
-                    // FIXME can this unwrap fail?
-                    (x.square() * x + Config::COEFF_B).sqrt().unwrap()
-                };
+            let y = if self.is_full {
+                ys[idx] * z_inv * z2
+            } else {
+                // y^2 = x^3 + b, which has no solution for an x from a
+                // malformed table.
+                (x.square() * x + Config::COEFF_B)
+                    .sqrt()
+                    .ok_or(EvalError::InvalidMacPoint)?
+            };
 
-                let point = Affine::new_unchecked(x, y);
-                let mac = EndoMac::from(point);
-                macs.push(mac);
-            });
+            macs.push(EndoMac::from(Affine::new_unchecked(x, y)));
+        }
 
-        // FIXME can this unwrap fail?
         let macs: [EndoMac<Config, Affine<Config>>; KAPPA] =
-            macs.try_into().unwrap_or_else(|_| panic!());
+            macs.try_into().map_err(|_| EvalError::MalformedTable)?;
 
         Ok((Affine::new_unchecked(input.x, input.y), macs.into()))
     }
@@ -312,7 +424,10 @@ where
         garble::bit_adaptor::clear_set as bit_adaptor_clear_set, mac::MacKey,
         utils::aes_hash::aes_ctr::clear_set as aes_ctr_clear_set,
     };
-    use ark_std::{UniformRand, rand::SeedableRng};
+    use ark_std::{
+        UniformRand,
+        rand::{SeedableRng, rngs::StdRng},
+    };
 
     let mut rng = StdRng::seed_from_u64(seed);
 
@@ -330,13 +445,15 @@ where
     let garbling_table = Table::garble(
         &mut Nonce::new(),
         &mut rng,
-        Some((is_full, output_mac_key)),
+        Some((is_full, output_mac_key, Fq::from(42u64))),
         &input_mac_key,
     )
     .unwrap()
     .0;
     aes_ctr_clear_set();
     bit_adaptor_clear_set();
+    assert!(garbling_table.has_garbled_shape(is_full));
+    assert!(!garbling_table.has_garbled_shape(!is_full));
 
     let evaluated_output = garbling_table
         .evaluate(&mut Nonce::new(), &input, &input_mac)
@@ -375,7 +492,7 @@ fn test_field_mac_to_ec_mac_g2() {
 
 #[cfg(test)]
 // Roundtrip serialisation and deserialisation of the table.
-fn test_serde_roundtrip<C, const KAPPA: usize>(name: &str, is_full: bool)
+fn test_serde_roundtrip<C, const KAPPA: usize>(is_full: bool)
 where
     C: GLVConfig + Clone,
     C: PSqModR,
@@ -394,8 +511,6 @@ where
     };
     use ark_ff::UniformRand;
     use ark_std::rand::{SeedableRng, rngs::StdRng};
-    use std::fs::File;
-    use std::io::{BufReader, BufWriter, Write};
 
     const SEED: u64 = 0;
 
@@ -410,7 +525,7 @@ where
     let original_table = Table::<C, KAPPA>::garble(
         &mut Nonce::new(),
         &mut rng,
-        Some((is_full, output_mac_key)),
+        Some((is_full, output_mac_key, Fq::from(42u64))),
         &input_mac_key,
     )
     .unwrap()
@@ -425,18 +540,12 @@ where
         .0;
     clear_set();
 
-    std::fs::create_dir_all("bin").expect("Could not create directory /bin");
-    let file_name = "bin/".to_owned() + name + ".bin";
-    let file = File::create(&file_name).expect("Could not create file");
-    let mut writer = BufWriter::new(file);
-    original_table.serialize_compressed(&mut writer).unwrap();
-    writer.flush().unwrap();
+    let mut bytes = Vec::new();
+    original_table.serialize_compressed(&mut bytes).unwrap();
 
     drop(original_table);
 
-    let file = File::open(&file_name).expect("Could not open file");
-    let mut reader = BufReader::new(file);
-    let deserialised_table = Table::<C, KAPPA>::deserialize_compressed(&mut reader).unwrap();
+    let deserialised_table = Table::<C, KAPPA>::deserialize_compressed(&*bytes).unwrap();
     let deserialised_output = deserialised_table
         .evaluate(&mut Nonce::new(), &input, &input_mac)
         .unwrap()
@@ -448,15 +557,15 @@ where
 
 #[test]
 fn test_A_serde_roundtrip() {
-    test_serde_roundtrip::<ark_bn254::g1::Config, KAPPA_A>(&"A_field_to_ec_mac", true);
+    test_serde_roundtrip::<ark_bn254::g1::Config, KAPPA_A>(true);
 }
 
 #[test]
 fn test_B_serde_roundtrip() {
-    test_serde_roundtrip::<ark_bn254::g2::Config, KAPPA_B>(&"B_field_to_ec_mac", false);
+    test_serde_roundtrip::<ark_bn254::g2::Config, KAPPA_B>(false);
 }
 
 #[test]
 fn test_C_serde_roundtrip() {
-    test_serde_roundtrip::<ark_bn254::g1::Config, KAPPA_B>(&"C_field_to_ec_mac", false);
+    test_serde_roundtrip::<ark_bn254::g1::Config, KAPPA_B>(false);
 }
